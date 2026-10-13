@@ -10,6 +10,8 @@ import { t, fmt } from '../i18n/i18n.ts';
 import type { Reward } from '../config/balance.ts';
 import { audio } from '../audio/index.ts';
 import { buzz } from '../services/feedback.ts';
+import { boardPreview } from '../screens/meta-common.ts';
+import { store } from '../state/store.ts';
 
 export function rewardItemEls(r: Reward): HTMLElement[] {
   const out: HTMLElement[] = [];
@@ -18,7 +20,16 @@ export function rewardItemEls(r: Reward): HTMLElement[] {
   if (r.rewinds) out.push(h('div.reward-item', { html: icon('rewind') }, h('span', { text: '×' + fmt(r.rewinds) }), h('small', { text: t('currency.rewinds') })));
   if (r.cosmetic) {
     const isInk = r.cosmetic.startsWith('ink');
-    out.push(h('div.reward-item', { html: icon(isInk ? 'brush' : 'paper'), style: { width: '132px', color: 'var(--accent)' } }, h('span', { text: t('cosmetic.' + r.cosmetic), style: { fontSize: '15px' } }), h('small', { text: t(isInk ? 'gallery.kind.ink' : 'gallery.kind.paper') })));
+    const item = h('div.reward-item', { style: { width: '132px' } });
+    try {
+      const prev = isInk ? boardPreview(r.cosmetic, store.data.cosmetics.paper, 60, 'ink') : boardPreview(store.data.cosmetics.ink, r.cosmetic, 60, 'paper');
+      prev.style.borderRadius = '12px';
+      item.appendChild(prev);
+    } catch {
+      item.insertAdjacentHTML('beforeend', icon(isInk ? 'brush' : 'paper'));
+    }
+    item.append(h('span', { text: t('cosmetic.' + r.cosmetic), style: { fontSize: '15px', color: 'var(--accent)' } }), h('small', { text: t(isInk ? 'gallery.kind.ink' : 'gallery.kind.paper') }));
+    out.push(item);
   }
   return out;
 }

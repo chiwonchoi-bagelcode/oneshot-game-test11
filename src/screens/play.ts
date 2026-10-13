@@ -132,6 +132,7 @@ export function createPlayScreen(): Screen {
   let pausePopup: PopupHandle | null = null;
   let resultShown = false;
   let timeScale = 1; // debug only
+  let lastDraw = 0;
 
   function boardOpts() {
     const s = store.data;
@@ -555,11 +556,18 @@ export function createPlayScreen(): Screen {
         fail(cells);
       }
       const running = phase === 'running' || phase === 'prestart';
+      // While the clock is stopped only gentle ambient motion remains: draw it at ~30 fps to save battery.
+      if (!running && !pendingFail && now - lastDraw < 31 && lastDraw > 0) {
+        kick();
+        return;
+      }
+      lastDraw = now;
       const frac = running ? 1 - (nextBeatAt - now) / interval : 0;
       renderer.setBeat(Math.max(0, Math.min(1, frac)), phase === 'running');
       updateBeat(frac, running);
       const animating = renderer.render(now);
       if (animating || running || pendingFail) kick();
+      else lastDraw = 0;
     }
   }
 

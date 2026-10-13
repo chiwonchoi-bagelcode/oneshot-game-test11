@@ -262,12 +262,130 @@ async function playthrough(browser) {
   await page.context().close();
 }
 
+async function startLevel(page, index) {
+  await page.evaluate((i) => window.__ink.go('play', { index: i }), index);
+  await sleep(500);
+  for (let k = 0; k < 3 && (await page.locator('.popup').count()); k++) { await tapSel(page, '.popup .popup-foot .btn'); await sleep(400); }
+}
+
+async function misc(browser) {
+  const page = await newPage(browser, 'iphone');
+  await page.waitForFunction(() => window.__ink.screen() === 'title');
+  await page.evaluate(() => { window.__ink.clearUpTo(40); window.__ink.store.data.seen = { 'daily.unlocked': 1 }; window.__ink.store.commit('seen'); });
+  // Settings + rules book
+  await page.evaluate(() => window.__ink.go('journey', undefined, { resetHistory: true }));
+  await sleep(300);
+  await tapSel(page, '.screen.active .topbar .icon-btn');
+  await sleep(400);
+  await shot(page, 'misc-settings');
+  const how = page.locator('.popup button', { hasText: /방법|How to play/ }).first();
+  if (await how.count()) { await how.click(); await sleep(500); await shot(page, 'misc-rulesbook'); }
+  await closePopups(page);
+
+  // Hint on a timing level (find one whose solution has a t>0 drop)
+  const timedIndex = await page.evaluate(() => {
+    const ids = window.__ink.levels;
+    for (let i = 20; i < 40; i++) { window.__ink.go('play', { index: i }); const inf = window.__ink.info(); if (inf && inf.solution.some((d) => d.t > 0)) return i; }
+    return 30;
+  });
+  await startLevel(page, timedIndex);
+  await tapSel(page, '.boosters .booster:last-child .icon-btn');
+  await sleep(700);
+  await shot(page, 'misc-hint-idle');
+  const info = await page.evaluate(() => window.__ink.info());
+  for (const d of info.solution.filter((d) => d.t === 0)) {
+    const p = await page.evaluate((i) => window.__ink.cellCenter(i), d.y * info.w + d.x);
+    await page.touchscreen.tap(p.x, p.y);
+    await sleep(60);
+  }
+  await sleep(1100);
+  await shot(page, 'misc-hint-waiting');
+  // Pause
+  await tapSel(page, '.screen.active .topbar .icon-btn:last-child');
+  await sleep(400);
+  await shot(page, 'misc-pause');
+  await closePopups(page);
+  await sleep(300);
+  // Rewind: let it play out (likely fails without the timed drop), then rewind
+  await waitPhase(page, ['lost', 'won'], 30000).catch(() => {});
+  await sleep(900);
+  if (await page.locator('.sheet.open').count()) {
+    await tapSel(page, '.sheet.open .side:first-child .icon-btn');
+    await sleep(700);
+    await shot(page, 'misc-rewound');
+  }
+  // Out of coins → shop overlay → back
+  await startLevel(page, timedIndex + 1);
+  await page.evaluate(() => { const s = window.__ink.store; s.data.hints = 0; s.data.coins = 10; s.commit('wallet'); });
+  await tapSel(page, '.boosters .booster:last-child .icon-btn');
+  await sleep(500);
+  await tapSel(page, '.popup .popup-foot .btn');
+  await sleep(500);
+  await shot(page, 'misc-not-enough');
+  await tapSel(page, '.popup .popup-foot .btn:last-child');
+  await sleep(800);
+  await shot(page, 'misc-shop-overlay');
+  await tapSel(page, '.screen.active .topbar .icon-btn');
+  await sleep(800);
+  log('after shop back:', await page.evaluate(() => window.__ink.screen()), await page.evaluate(() => window.__ink.state().phase));
+  await shot(page, 'misc-back-to-play');
+  await closePopups(page);
+
+  // Symbols + dark paper
+  await page.evaluate(() => { const s = window.__ink.store; s.data.settings.symbols = true; s.data.cosmetics.paper = 'paper-night'; s.data.cosmetics.owned.push('paper-night'); s.commit('settings'); s.commit('cosmetics'); });
+  await startLevel(page, 45);
+  await page.evaluate(() => { window.__ink.timeScale(1); window.__ink.autoplay(true); });
+  await sleep(2500);
+  await shot(page, 'misc-symbols-night');
+  await page.evaluate(() => window.__ink.autoplay(false));
+  await page.evaluate(() => { const s = window.__ink.store; s.data.settings.symbols = false; s.data.cosmetics.paper = 'paper-hanji'; s.commit('settings'); s.commit('cosmetics'); });
+
+  // Chapter complete
+  await page.evaluate(() => window.__ink.clearUpTo(28));
+  await startLevel(page, 29);
+  await page.evaluate(() => { window.__ink.timeScale(4); window.__ink.autoplay(true); });
+  await waitPhase(page, ['won'], 40000).catch(() => log('chapter boss not won'));
+  await page.waitForSelector('.sheet.open', { timeout: 15000 });
+  await sleep(1500);
+  await shot(page, 'misc-boss-result');
+  await tapSel(page, '.sheet.open .sheet-actions .btn-lg');
+  for (let k = 0; k < 5; k++) {
+    await sleep(1200);
+    if (!(await page.locator('.popup').count())) break;
+    await shot(page, 'misc-chapter-' + k);
+    const btn = page.locator('.popup .popup-foot .btn');
+    if (await btn.count()) await btn.first().click(); else { await page.locator('.popup').last().click({ position: { x: 20, y: 20 } }); await sleep(300); await page.locator('.popup').last().click({ position: { x: 20, y: 20 } }).catch(() => {}); }
+  }
+  await sleep(800);
+  await shot(page, 'misc-next-chapter');
+  await closePopups(page);
+
+  // Daily
+  await page.evaluate(() => window.__ink.go('daily', undefined, { resetHistory: true }));
+  await sleep(500);
+  await page.evaluate(() => window.__ink.go('play', { daily: 0 }));
+  await sleep(500);
+  await page.evaluate(() => { window.__ink.timeScale(4); window.__ink.autoplay(true); });
+  await waitPhase(page, ['won', 'lost'], 40000).catch(() => {});
+  await page.waitForSelector('.sheet.open', { timeout: 15000 }).catch(() => {});
+  await sleep(1500);
+  await shot(page, 'misc-daily-result');
+  await tapSel(page, '.sheet.open .sheet-actions .btn-lg');
+  await sleep(1500);
+  await page.locator('.popup').last().click({ position: { x: 20, y: 20 } }).catch(() => {});
+  await sleep(1200);
+  await shot(page, 'misc-daily-after');
+  log('misc errors:', JSON.stringify(page._errors.slice(0, 8)));
+  await page.context().close();
+}
+
 // ----------------------------------------------------------------
 const server = await startServer();
 const browser = await chromium.launch();
 try {
   if (want('firstrun')) await firstrun(browser);
   if (args.includes('playthrough')) await playthrough(browser);
+  if (want('misc')) await misc(browser);
   if (want('screens')) await screens(browser);
   if (want('flows')) await flows(browser);
   if (want('persist')) await persist(browser);

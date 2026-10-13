@@ -278,7 +278,18 @@
   background: var(--accent);
   color: #fff;
   box-shadow: inset 0 -4px 0 var(--accent-dark), 0 0 0 4px var(--accent-soft);
-  animation: lv-pulse 1.6s ease-in-out infinite;
+}
+
+/* Pulse ring on its own layer (transform/opacity only — no repaints). */
+.lv.current::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 22px;
+  border: 3px solid rgba(224, 86, 59, 0.45);
+  animation: lv-pulse 1.6s ease-out infinite;
+  pointer-events: none;
+  will-change: transform, opacity;
 }
 
 .lv.locked {
@@ -329,8 +340,13 @@
 }
 
 @keyframes lv-pulse {
-  50% {
-    box-shadow: inset 0 -4px 0 var(--accent-dark), 0 0 0 7px rgba(224, 86, 59, 0.18);
+  from {
+    transform: scale(0.96);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1.18);
+    opacity: 0;
   }
 }
 
