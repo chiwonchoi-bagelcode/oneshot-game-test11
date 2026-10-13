@@ -127,7 +127,9 @@ export function createJourneyScreen(): Screen {
     });
   }
 
-  store.on('progress', refresh);
+  store.on('progress', () => {
+    if (el.classList.contains('active')) refresh();
+  });
   onLangChange(refresh);
   refresh();
 

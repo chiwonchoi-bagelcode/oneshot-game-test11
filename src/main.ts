@@ -81,7 +81,9 @@ async function boot(): Promise<void> {
     applyRootFlags();
     if (store.data.settings.lang !== getLang()) setLang(store.data.settings.lang);
   });
-  store.on('all', refreshBadges);
+  store.on('all', (topic) => {
+    if (topic !== 'stats' && topic !== 'seen') refreshBadges();
+  });
   refreshBadges();
   setInterval(refreshBadges, 60000);
 

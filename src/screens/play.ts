@@ -25,7 +25,7 @@ import { grant, spendCoins, useItem } from '../state/economy.ts';
 import { recordClear, recordFail, chapterStats, clearedCount, type ClearResult } from '../state/progress.ts';
 import { todaySet, recordDailyClear, type DailyClearResult } from '../state/daily.ts';
 import { levelInfo, levelAt, CHAPTERS, ALL_LEVELS } from '../levels/pack.ts';
-import { TEMPO, PRICES, LEVEL_REWARD, DAILY } from '../config/balance.ts';
+import { TEMPO, PRICES, LEVEL_REWARD, DAILY, ADS } from '../config/balance.ts';
 import { adsLeft, showRewardedAd } from '../services/ads.ts';
 import { audio } from '../audio/index.ts';
 import { buzz } from '../services/feedback.ts';
@@ -175,7 +175,7 @@ export function createPlayScreen(): Screen {
 
   // ---------- Level setup ----------
   function computeBeatMs(c: LevelCtx): number {
-    const base = c.def.tempo ?? (c.mode === 'campaign' && c.chapter === 0 && c.number <= 14 ? TEMPO.tutorialBeatMs : TEMPO.beatMs);
+    const base = c.def.tempo ?? (c.mode === 'campaign' && c.chapter === 0 && c.number <= 20 ? TEMPO.tutorialBeatMs : TEMPO.beatMs);
     return Math.round((base * (store.data.settings.relaxed ? TEMPO.relaxedMul : 1)) / timeScale);
   }
 
@@ -864,12 +864,23 @@ export function createPlayScreen(): Screen {
       h('div', { html: icon('coin'), style: { fontSize: '64px', display: 'flex', justifyContent: 'center', marginBottom: '8px' } }),
       h('p', { text: t('notEnough.body', { n: need }), style: { margin: '0', fontSize: '16px', color: 'var(--ink-2)' } }),
     );
-    const shopBtn = button(t('notEnough.toShop'), () => {
+    const foot: HTMLElement[] = [];
+    const adCoins = ADS.coinsReward.coins || 0;
+    if (adsLeft('coins') > 0 && adCoins > 0) {
+      foot.push(button(t('notEnough.watchAd', { n: adCoins }), async () => {
+        p.close();
+        const ok = await showRewardedAd('coins');
+        if (!ok) return;
+        grant(ADS.coinsReward);
+        await showReward(ADS.coinsReward);
+      }, { variant: 'violet', icon: icon('ad'), block: true }));
+    }
+    foot.push(button(t('notEnough.toShop'), () => {
       p.close();
       pauseSilently();
       go('shop', { section: 'coins', overlay: true });
-    }, { variant: 'jade', icon: icon('shop') });
-    const p = openPopup({ id: 'not-enough', title: t('notEnough.title'), body, foot: shopBtn });
+    }, { variant: 'jade', icon: icon('shop'), block: true }));
+    const p = openPopup({ id: 'not-enough', title: t('notEnough.title'), body, foot, cls: 'nec-pop' });
   }
 
   // ---------- Pause ----------

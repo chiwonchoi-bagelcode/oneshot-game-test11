@@ -73,7 +73,7 @@ export function recordFail(id: string): void {
   const r = store.data.levels[id] || (store.data.levels[id] = {});
   if (!r.c) r.f = (r.f || 0) + 1;
   store.data.stats.plays++;
-  store.commit('progress');
+  store.commit('stats');
 }
 
 export function recordClear(id: string, sealed: boolean): ClearResult {

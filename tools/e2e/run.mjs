@@ -269,8 +269,10 @@ async function startLevel(page, index) {
 }
 
 async function misc(browser) {
-  const page = await newPage(browser, 'iphone');
+  const lang = process.env.E2E_LANG || 'ko';
+  const page = await newPage(browser, process.env.E2E_DEVICE || 'iphone', { lang });
   await page.waitForFunction(() => window.__ink.screen() === 'title');
+  await page.evaluate((l) => window.__ink.setLang(l), lang);
   await page.evaluate(() => { window.__ink.clearUpTo(40); window.__ink.store.data.seen = { 'daily.unlocked': 1 }; window.__ink.store.commit('seen'); });
   // Settings + rules book
   await page.evaluate(() => window.__ink.go('journey', undefined, { resetHistory: true }));
@@ -379,6 +381,69 @@ async function misc(browser) {
   await page.context().close();
 }
 
+async function dailies(browser) {
+  const page = await newPage(browser, 'small', { notch: false });
+  let ok = 0, bad = [];
+  for (const known of [8, 20, 239]) {
+    await page.evaluate((k) => { const s = window.__ink.store; s.data.levels = {}; window.__ink.clearUpTo(k); s.data.daily = { days: {}, streak: 0, best: 0, last: null, claimed: [] }; s.commit('all'); }, known);
+    for (let d = 0; d < 6; d++) {
+      await page.evaluate((d) => { const s = window.__ink.store; s.data.dayOffset = d * 3 + (s.data.levels ? 0 : 0); s.commit('all'); }, d);
+      for (let tier = 0; tier < 3; tier++) {
+        await page.evaluate((t) => window.__ink.go('play', { daily: t }), tier);
+        await sleep(150);
+        await closePopups(page);
+        await page.evaluate(() => { window.__ink.timeScale(10); window.__ink.autoplay(true); });
+        try {
+          await waitPhase(page, ['won', 'lost'], 25000);
+          const st = await page.evaluate(() => window.__ink.state());
+          if (st.phase === 'won') ok++; else bad.push(`${known}/${d}/${tier}:${st.level}`);
+        } catch { bad.push(`${known}/${d}/${tier}:timeout`); }
+        await page.evaluate(() => window.__ink.autoplay(false));
+        await closePopups(page);
+      }
+    }
+  }
+  log(`dailies autoplay: ${ok} won`, bad.length ? 'FAILED: ' + bad.join(', ') : '');
+  log('dailies errors:', JSON.stringify(page._errors.slice(0, 5)));
+  await page.context().close();
+}
+
+/** Rapid double taps must never open two popups or need a second tap. */
+async function doubletap(browser) {
+  const page = await newPage(browser, 'iphone');
+  await page.waitForFunction(() => window.__ink.screen() === 'title');
+  await page.evaluate(() => { window.__ink.clearUpTo(12); window.__ink.go('journey', undefined, { resetHistory: true }); });
+  await sleep(400);
+  const gear = await page.locator('.screen.active .topbar .icon-btn').first().boundingBox();
+  await page.touchscreen.tap(gear.x + 20, gear.y + 20);
+  await sleep(40);
+  await page.touchscreen.tap(gear.x + 20, gear.y + 20);
+  await sleep(600);
+  const n1 = await page.locator('.popup').count();
+  // tap the close button twice quickly: must close exactly the settings popup and nothing else
+  const close = await page.locator('.popup .popup-close').first().boundingBox();
+  await page.touchscreen.tap(close.x + 20, close.y + 20);
+  await sleep(40);
+  await page.touchscreen.tap(close.x + 20, close.y + 20);
+  await sleep(500);
+  const n2 = await page.locator('.popup').count();
+  // single tap opens on first tap
+  await page.touchscreen.tap(gear.x + 20, gear.y + 20);
+  await sleep(500);
+  const n3 = await page.locator('.popup').count();
+  await closePopups(page);
+  // wallet + : double tap → one shop, scrolled to coins
+  const pill = await page.locator('.screen.active .pill').first().boundingBox();
+  await page.touchscreen.tap(pill.x + 20, pill.y + 20);
+  await sleep(30);
+  await page.touchscreen.tap(pill.x + 20, pill.y + 20);
+  await sleep(700);
+  const scr = await page.evaluate(() => window.__ink.screen());
+  log(`doubletap: settings popups=${n1} (want 1), after double close=${n2} (want 0), single tap=${n3} (want 1), pill→${scr}`);
+  await shot(page, 'doubletap-shop');
+  await page.context().close();
+}
+
 // ----------------------------------------------------------------
 const server = await startServer();
 const browser = await chromium.launch();
@@ -386,6 +451,8 @@ try {
   if (want('firstrun')) await firstrun(browser);
   if (args.includes('playthrough')) await playthrough(browser);
   if (want('misc')) await misc(browser);
+  if (want('dailies')) await dailies(browser);
+  if (want('doubletap')) await doubletap(browser);
   if (want('screens')) await screens(browser);
   if (want('flows')) await flows(browser);
   if (want('persist')) await persist(browser);

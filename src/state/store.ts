@@ -6,7 +6,7 @@
 import { loadSave, writeSave, wipeSave, defaultSave, type SaveData } from './save.ts';
 import { detectLang } from '../i18n/i18n.ts';
 
-export type Topic = 'wallet' | 'progress' | 'daily' | 'cosmetics' | 'settings' | 'shop' | 'seen' | 'all';
+export type Topic = 'wallet' | 'progress' | 'daily' | 'cosmetics' | 'settings' | 'shop' | 'seen' | 'stats' | 'all';
 
 type Listener = (topic: Topic) => void;
 

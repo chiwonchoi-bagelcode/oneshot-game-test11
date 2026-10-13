@@ -189,7 +189,7 @@ export default {
     'result.sealBonus': 'Seal bonus',
     'result.double': 'Watch ad: x2',
     'result.doubled': 'Doubled!',
-    'result.next': 'Next level',
+    'result.next': 'Next',
     'result.replay': 'Replay',
     'result.map': 'Journey',
     'result.alreadyCleared': 'Already completed',
