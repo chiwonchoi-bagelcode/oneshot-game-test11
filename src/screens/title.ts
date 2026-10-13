@@ -72,7 +72,7 @@ export function createTitleScreen(): Screen {
     ctx.globalCompositeOperation = 'multiply';
     for (const b of blooms) {
       const age = (now - b.born) / b.life;
-      if (age > 1) continue;
+      if (age > 1 || age <= 0) continue;
       const grow = 1 - Math.pow(1 - Math.min(1, age * 2.2), 3);
       const r = b.max * grow;
       const alpha = Math.min(1, age * 6) * (1 - Math.max(0, (age - 0.6) / 0.4)) * 0.42;

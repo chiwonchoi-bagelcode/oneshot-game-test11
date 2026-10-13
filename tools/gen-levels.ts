@@ -9,7 +9,7 @@
  * Options: --workers N   --quick (fewer candidates, for testing)
  */
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { LevelDef, MechanicKey } from '../src/core/sim.ts';
@@ -451,9 +451,24 @@ async function main() {
   const nW = wi >= 0 ? +args[wi + 1] : Math.max(1, Math.min(8, cpus().length));
   const t0 = Date.now();
   const { jobs, slots, dailies } = buildJobs(quick);
-  console.log('jobs: ' + jobs.length + '  workers: ' + nW + (quick ? '  (quick)' : ''));
+  // optional dev cache (--cache file): keyed by job spec + a hash of the generator/simulator sources
+  const ci = args.indexOf('--cache');
+  const cacheFile = ci >= 0 ? args[ci + 1] : '';
+  const codeHash = hash32(['tools/gen-core.ts', 'tools/level-lib.ts', 'src/core/sim.ts'].map((f) => readFileSync(ROOT + f, 'utf8')).join('\n'));
+  const sig = (j: Job) => String(hash32(JSON.stringify(j.spec) + '|' + j.seed + '|' + j.want + '|' + j.maxAttempts + '|' + codeHash));
+  const cache: Record<string, { sig: string; result: JobResult }> = cacheFile && existsSync(cacheFile) ? JSON.parse(readFileSync(cacheFile, 'utf8')) : {};
+  const cached: JobResult[] = [];
+  const todoJobs = jobs.filter((j) => {
+    const c = cache[j.key];
+    if (c && c.sig === sig(j)) {
+      cached.push({ ...c.result, idx: j.idx });
+      return false;
+    }
+    return true;
+  });
+  console.log('jobs: ' + jobs.length + (cached.length ? ' (' + cached.length + ' cached)' : '') + '  workers: ' + nW + (quick ? '  (quick)' : ''));
   let lastPct = -1;
-  const res = await runPool<Job, JobResult>(jobs, nW, (j) => ({ job: j }), (m) => m.result, (d) => {
+  const res = await runPool<Job, JobResult>(todoJobs, nW, (j) => ({ job: j }), (m) => m.result, (d) => {
     const pct = Math.floor((d * 20) / jobs.length) * 5;
     if (pct !== lastPct) {
       lastPct = pct;
@@ -461,6 +476,10 @@ async function main() {
     }
   });
   console.log('\ngenerated in ' + ((Date.now() - t0) / 1000).toFixed(0) + 's');
+  if (cacheFile) {
+    for (const r of res) cache[jobs[r.idx].key] = { sig: sig(jobs[r.idx]), result: r };
+  }
+  res.push(...cached);
   const byIdx = new Map<number, JobResult>();
   for (const r of res) byIdx.set(r.idx, r);
   // phase 2: relaxed specs for slots that found nothing usable
@@ -476,52 +495,95 @@ async function main() {
   }
   if (extra.length) {
     console.log('phase 2: ' + extra.length + ' relaxed jobs (' + slots.filter((s) => s.jobs.length > 1).map((s) => s.id).join(' ') + ')');
-    const res2 = await runPool<Job, JobResult>(extra, nW, (j) => ({ job: j }), (m) => m.result);
-    for (const r of res2) byIdx.set(r.idx, r);
+    const run2: Job[] = [];
+    for (const j of extra) {
+      const c = cache[j.key];
+      if (c && c.sig === sig(j)) byIdx.set(j.idx, { ...c.result, idx: j.idx });
+      else run2.push(j);
+    }
+    const res2 = await runPool<Job, JobResult>(run2, nW, (j) => ({ job: j }), (m) => m.result);
+    const exByIdx = new Map(extra.map((j) => [j.idx, j]));
+    for (const r of res2) {
+      byIdx.set(r.idx, r);
+      if (cacheFile) cache[exByIdx.get(r.idx)!.key] = { sig: sig(exByIdx.get(r.idx)!), result: r };
+    }
     res.push(...res2);
   }
+  if (cacheFile) writeFileSync(cacheFile, JSON.stringify(cache));
   const tot: GenStats = { attempts: 0, terrain: 0, plan: 0, filter: 0, cover: 0, measure: 0, ok: 0 };
   for (const r of res) for (const k of Object.keys(tot) as (keyof GenStats)[]) tot[k] += r.stats[k];
   console.log('attempts ' + JSON.stringify(tot));
 
-  // ---------------- selection
+  // ---------------- selection (per chapter; raise a chapter's targets until its average beats the previous one)
   const metricsOf = new Map<string, Metrics>();
-  const usedCanon = new Set<string>();
-  const terrainUse = new Map<string, number>();
+  let usedCanon = new Set<string>();
+  let terrainUse = new Map<string, number>();
   const campaign: LevelDef[][] = [];
   for (const hm of Object.values(HANDMADE)) usedCanon.add(canonKey(hm));
-  let prevRandom = 0;
   const problems: string[] = [];
-  for (let ch = 1; ch <= 8; ch++) {
+  const pickChapter = (ch: number, offset: number) => {
+    const used = new Set(usedCanon);
+    const tUse = new Map(terrainUse);
     const list: LevelDef[] = [];
+    const mets = new Map<string, Metrics>();
+    const probs: string[] = [];
+    let prevRandom = 0;
+    let sum = 0;
     for (let s = 1; s <= LEVELS_PER_CHAPTER; s++) {
       const id = 'c' + ch + '-' + String(s).padStart(2, '0');
       if (HANDMADE[id]) {
         list.push({ ...HANDMADE[id] });
         prevRandom = 0;
+        sum += handDiff.get(id)!;
         continue;
       }
       const sj = slots.find((x) => x.id === id)!;
       const pool: Candidate[] = [];
       for (const j of sj.jobs) pool.push(...byIdx.get(j)!.cands);
-      const usable = pool.filter((c) => okFor(c, sj, prevRandom) && !usedCanon.has(canonKey(c.def)));
+      const usable = pool.filter((c) => okFor(c, sj, prevRandom) && !used.has(canonKey(c.def)));
       if (!usable.length) {
-        problems.push(id + ': no usable candidate (' + pool.length + ' generated)');
+        probs.push(id + ': no usable candidate (' + pool.length + ' generated)');
         continue;
       }
-      usable.sort((a, b) => score(a, sj, terrainUse) - score(b, sj, terrainUse));
+      const target = sj.target + offset;
+      usable.sort((a, b) => score(a, sj, tUse, target) - score(b, sj, tUse, target));
       const c = usable[0];
       const def: LevelDef = { ...c.def, id };
       const tag = TAG_OF[sj.kind];
       if (tag) def.tag = tag;
-      usedCanon.add(canonKey(def));
+      used.add(canonKey(def));
       const tk = terrainKey(def);
-      terrainUse.set(tk, (terrainUse.get(tk) || 0) + 1);
+      tUse.set(tk, (tUse.get(tk) || 0) + 1);
       prevRandom = c.metrics.random;
-      metricsOf.set(id, c.metrics);
+      mets.set(id, c.metrics);
       list.push(def);
+      sum += c.metrics.diff;
     }
-    campaign.push(list);
+    return { list, mets, used, tUse, probs, avg: sum / LEVELS_PER_CHAPTER };
+  };
+  // handmade levels are measured up front (their diff counts toward the chapter average)
+  const handDefs = Object.values(HANDMADE);
+  const handMeas = await runPool<MeasureTask, MeasureResult>(handDefs.map((def, idx) => ({ idx, def })), nW, (t) => ({ measure: t }), (m) => m.measured);
+  const handDiff = new Map<string, number>();
+  for (const m of handMeas) {
+    handDiff.set(handDefs[m.idx].id, m.metrics.diff);
+    metricsOf.set(handDefs[m.idx].id, m.metrics);
+  }
+  let prevAvg = -1;
+  for (let ch = 1; ch <= 8; ch++) {
+    let offset = 0;
+    let r = pickChapter(ch, offset);
+    while (ch > 1 && r.avg <= prevAvg + 1.5 && offset < 40) {
+      offset += 2;
+      r = pickChapter(ch, offset);
+    }
+    console.log('chapter ' + ch + ': avg diff ' + r.avg.toFixed(1) + (offset ? ' (targets +' + offset + ')' : ''));
+    prevAvg = r.avg;
+    usedCanon = r.used;
+    terrainUse = r.tUse;
+    problems.push(...r.probs);
+    for (const [k, v] of r.mets) metricsOf.set(k, v);
+    campaign.push(r.list);
   }
   // ---------------- daily pool
   const daily: (LevelDef & { tier: string; uses: MechanicKey[] })[] = [];
@@ -601,8 +663,10 @@ function okFor(c: Candidate, sj: SlotJob, prevRandom: number): boolean {
   return true;
 }
 
-function score(c: Candidate, sj: SlotJob, terrainUse: Map<string, number>): number {
-  let s = Math.abs(c.metrics.diff - sj.target);
+function score(c: Candidate, sj: SlotJob, terrainUse: Map<string, number>, target: number): number {
+  let s = Math.abs(c.metrics.diff - target);
+  // timing is the core skill: where the slot allows it, prefer two or more timed drops
+  if (sj.slot0.timed && sj.slot0.timed[1] >= 2 && c.metrics.timedDrops >= 2) s -= 5;
   s += (terrainUse.get(terrainKey(c.def)) || 0) * 12;
   s -= c.info.coverage * 3;
   if (c.metrics.settleTick > 16) s += (c.metrics.settleTick - 16) * 0.8;
