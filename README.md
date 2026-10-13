@@ -44,6 +44,19 @@ and App (`backButton`) plugins when present and falls back to web APIs otherwise
 | Levels (generated, verified) | `src/levels/data/*.ts` via `npm run levels:gen` |
 | All text (Korean / English) | `src/i18n/strings/*.ts` |
 
+## Content
+
+- 8 chapters × 30 levels (240), each chapter restores a hand-drawn painting region by region.
+- New rules arrive one at a time with a short animated card: drop (1), walls (3), ink order (5),
+  mixing (7), timing (16), near-miss/parity (31), three colours (42), short inks (61),
+  clean cells (91), sleeping seeds (121), colour gates (151), thick paper (181); chapter 8 combines all.
+- After the timing lesson 74% of levels require waiting for the right beat; random tapping wins
+  well under 1% of later levels.
+- Daily pictures: 3 per day (light / thinking / challenge) from a pool of 420 verified puzzles,
+  re-skinned per day, only using rules the player has already learned; streak rewards and calendar.
+- Seals (낙관) for first-try clears without hints or rewinds → chapter seal rewards.
+- Cosmetics: 7 ink sets and 7 papers (coins, chapter rewards, streak rewards, bundles).
+
 ## Levels
 
 - `tools/gen-levels.ts` builds the 8×30 campaign and the daily pool (seeded, reproducible).
@@ -51,6 +64,17 @@ and App (`backButton`) plugins when present and falls back to web APIs otherwise
   checks the mechanic schedule, board sizes, and measures random/greedy-bot success so no level can be
   solved by tapping without thinking. Report: `tools/level-report.md`.
 - `node tools/e2e/run.mjs levels` plays every level inside the real game loop (autoplay).
+
+## Tests
+
+```bash
+node --experimental-strip-types tools/sim-test.ts        # rules
+npm run levels:verify                                    # all 660 levels
+node tools/e2e/run.mjs                                   # phone-size browser flows (KO/EN, notch)
+node tools/e2e/run.mjs playthrough                       # real-tempo play of the first levels
+node tools/e2e/run.mjs levels dailies                    # every level + daily samples in the game loop
+```
+Screenshots land in `tools/e2e/out/`.
 
 ## Debug panel (dev builds only)
 

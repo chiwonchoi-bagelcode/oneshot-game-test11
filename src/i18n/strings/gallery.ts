@@ -32,7 +32,7 @@ export default {
     'gallery.ownedCount': '{n}/{total} 보유',
     'gallery.previewNote': '보드에서는 이렇게 보여요',
 
-    'cosmetic.ink-classic': '기본 먹',
+    'cosmetic.ink-classic': '기본 잉크',
     'cosmetic.ink-pastel': '파스텔',
     'cosmetic.ink-autumn': '가을빛',
     'cosmetic.ink-dawn': '새벽녘',
