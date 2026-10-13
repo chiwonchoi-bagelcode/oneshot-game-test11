@@ -1,0 +1,21 @@
+{
+  "appId": "com.bagelcode.inkbloom",
+  "appName": "Inkbloom",
+  "webDir": "dist",
+  "backgroundColor": "#f4ecdf",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#f4ecdf"
+  },
+  "android": {
+    "backgroundColor": "#f4ecdf",
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 600,
+      "backgroundColor": "#f4ecdf",
+      "showSpinner": false
+    }
+  }
+}
