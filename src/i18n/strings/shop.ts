@@ -8,10 +8,9 @@ export default {
     'shop.sec.items': '아이템',
 
     'shop.gift.name': '오늘의 선물',
-    'shop.gift.sub': '하루에 한 번 무료로 받아요',
-    'shop.gift.next': '다음 선물까지 {time}',
+    'shop.gift.next': '{time} 뒤에 또 받아요',
     'shop.gift.title': '오늘의 선물',
-    'shop.ad.name': '광고 보고 코인 {n}개',
+    'shop.ad.name': '광고 보고 받기',
     'shop.ad.left': '오늘 {n}번 더 볼 수 있어요',
     'shop.ad.none': '오늘 볼 수 있는 광고를 다 봤어요',
     'shop.ad.watch': '보기',
@@ -27,7 +26,7 @@ export default {
 
     'shop.qty.hints': '힌트 {n}개',
     'shop.qty.rewinds': '되감기 {n}회',
-    'shop.desc.hints': '막힐 때 정답 자리와 박자를 하나씩 보여 줘요',
+    'shop.desc.hints': '이 레벨의 정답 자리와 박자를 하나씩 보여 줘요',
     'shop.desc.rewinds': '마지막 방울을 떨어뜨리기 직전으로 돌아가요',
     'shop.boughtTitle': '구매했어요',
 
@@ -59,10 +58,9 @@ export default {
     'shop.sec.items': 'Items',
 
     'shop.gift.name': 'Daily gift',
-    'shop.gift.sub': 'Free once a day',
     'shop.gift.next': 'Next gift in {time}',
     'shop.gift.title': 'Daily gift',
-    'shop.ad.name': 'Watch an ad: {n} coins',
+    'shop.ad.name': 'Watch an ad',
     'shop.ad.left': '{n} left today',
     'shop.ad.left.one': '1 left today',
     'shop.ad.none': 'No more ads today',
@@ -81,7 +79,7 @@ export default {
     'shop.qty.hints.one': '1 Hint',
     'shop.qty.rewinds': '{n} Rewinds',
     'shop.qty.rewinds.one': '1 Rewind',
-    'shop.desc.hints': 'Shows where and on which beat to drop each ink',
+    'shop.desc.hints': 'When you’re stuck, shows where and on which beat to drop each ink',
     'shop.desc.rewinds': 'Takes you back to just before your last drop',
     'shop.boughtTitle': 'Purchased',
 

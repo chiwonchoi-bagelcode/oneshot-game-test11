@@ -108,6 +108,8 @@ class Engine implements AudioEngine {
   private lastCtPerf = 0;
   private lowPower = false;
   private created = 0;
+  /** Audio time of the last request that needed sound (idle-suspend countdown starts here). */
+  private lastWake = 0;
   /** The current context has been 'running' at least once (so a failed resume means interrupted). */
   private ran = false;
 
@@ -143,13 +145,14 @@ class Engine implements AudioEngine {
     this.ctx = ctx;
     this.created++;
     this.ran = false;
+    this.lastWake = 0;
     this.stale = false;
     this.clockInit = false;
     this.idleSuspended = false;
     this.lastCt = -1;
     if (!this.bank) this.bank = new Bank(ctx.sampleRate, bufferFactory(ctx));
     else this.bank.setFactory(bufferFactory(ctx));
-    const st = new Studio(ctx, this.bank, { lowPower: this.lowPower, clock: this.clock });
+    const st = new Studio(ctx, this.bank, { lowPower: this.lowPower, clock: this.clock, deferReverb: true });
     this.studio = st;
     st.setVolumes(this.vol.sfx, this.vol.music);
     this.bank.prefetch(ESSENTIALS);
@@ -161,6 +164,14 @@ class Engine implements AudioEngine {
     this.bank.prefetch(Bank.allNames());
     ctx.onstatechange = () => this.onState();
     this.ensureTimers();
+    // reverb IR after the gesture handler returns (keeps the first tap instant)
+    setTimeout(() => {
+      try {
+        if (this.studio === st) st.core.buildReverb();
+      } catch {
+        /* */
+      }
+    }, 30);
   }
 
   private teardown(): void {
@@ -367,7 +378,7 @@ class Engine implements AudioEngine {
     const st = this.studio;
     if (!ctx || !st || this.grid) return;
     if (st.needsPump() || (this.bank && this.bank.pending)) return;
-    if (ctx.currentTime > st.core.lastSoundEnd + IDLE_SUSPEND_S) {
+    if (ctx.currentTime > Math.max(st.core.busyUntil(), this.lastWake) + IDLE_SUSPEND_S) {
       this.idleSuspended = true;
       this.stopTimers();
       ctx.suspend().catch(() => undefined);
@@ -411,6 +422,7 @@ class Engine implements AudioEngine {
         return null;
       }
     }
+    this.lastWake = ctx.currentTime;
     this.ensureTimers();
     return st;
   }
@@ -526,7 +538,8 @@ class Engine implements AudioEngine {
   }
 }
 
-export const audio = new Engine();
+const engine = new Engine();
+export const audio: AudioEngine = engine;
 
 let installed = false;
 
@@ -545,10 +558,10 @@ export function initAudioLifecycle(): void {
     /* */
   }
   try {
-    const onGesture = (): void => audio.unlock();
+    const onGesture = (): void => engine.unlock();
     const opts: AddEventListenerOptions = { capture: true, passive: true };
     for (const ev of ['pointerdown', 'pointerup', 'touchend', 'mousedown', 'keydown', 'click']) window.addEventListener(ev, onGesture, opts);
-    const eng = audio as unknown as Engine;
+    const eng = engine;
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') eng.onHide();
       else eng.onShow();

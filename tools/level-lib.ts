@@ -104,9 +104,7 @@ function isPrim(c: number): boolean {
 export class FS {
   B: Board;
   ink: Uint8Array;
-  mixed: Uint8Array;
   seed: Uint8Array;
-  born: Int16Array;
   /** Bitmask of wave ids that coloured each cell (only when tracking). */
   cw: Int32Array | null;
   /** Per wave id: colour, range, origin tick, kind (0 drop, 1 seed), drop index or seed cell. */
@@ -123,15 +121,11 @@ export class FS {
   lastDrop: number;
   bad: boolean;
   met: number;
-  dropped: number[];
-  dropT: number[];
 
   constructor(B: Board, track = false) {
     this.B = B;
     this.ink = new Uint8Array(B.n);
-    this.mixed = new Uint8Array(B.n);
-    this.seed = B.seed0.slice();
-    this.born = new Int16Array(B.n);
+    this.seed = B.seed0;
     this.cw = track ? new Int32Array(B.n) : null;
     this.wc = [];
     this.wr = [];
@@ -144,17 +138,13 @@ export class FS {
     this.lastDrop = -1;
     this.bad = false;
     this.met = 0;
-    this.dropped = [];
-    this.dropT = [];
   }
 
   clone(): FS {
     const s = Object.create(FS.prototype) as FS;
     s.B = this.B;
     s.ink = this.ink.slice();
-    s.mixed = this.mixed.slice();
-    s.seed = this.seed.slice();
-    s.born = this.born.slice();
+    s.seed = this.seed === this.B.seed0 ? this.seed : this.seed.slice();
     s.cw = this.cw ? this.cw.slice() : null;
     s.wc = this.wc.slice();
     s.wr = this.wr.slice();
@@ -167,8 +157,6 @@ export class FS {
     s.lastDrop = this.lastDrop;
     s.bad = this.bad;
     s.met = this.met;
-    s.dropped = this.dropped.slice();
-    s.dropT = this.dropT.slice();
     return s;
   }
 
@@ -223,11 +211,8 @@ export class FS {
     this.wk.push(0);
     this.pi++;
     this.ink[i] = c;
-    this.born[i] = this.tick;
     if (this.cw) this.cw[i] = id < 31 ? 1 << id : 0;
     this.mark(i, c);
-    this.dropped.push(i);
-    this.dropT.push(this.tick);
     this.lastDrop = this.tick;
     const wait = B.slow[i] ? 1 : 0;
     if (wait || this.canGrow(i, 0, c, r)) {
@@ -238,7 +223,8 @@ export class FS {
 
   step(): void {
     const B = this.B, nb = B.nb, wall = B.wall, gate = B.gate, slow = B.slow;
-    const ink = this.ink, seed = this.seed, mixed = this.mixed;
+    const ink = this.ink;
+    let seed = this.seed;
     const tNext = this.tick + 1;
     const bits = S_BITS, claimed = S_CLAIMED, wb = S_WB;
     const cT = S_CT, cW = S_CW, cD = S_CD;
@@ -289,8 +275,6 @@ export class FS {
       const b = bits[m];
       bits[m] = 0;
       ink[m] = b;
-      this.born[m] = tNext;
-      mixed[m] = isPrim(b) ? 0 : 1;
       if (track) {
         this.cw![m] = wb[m];
         wb[m] = 0;
@@ -306,7 +290,8 @@ export class FS {
     const mk = S_MARK;
     for (let q = 0; q < nq; q++) {
       const m = cT[q];
-      if (mixed[m]) continue;
+      const im = ink[m];
+      if (im !== 1 && im !== 2 && im !== 4) continue;
       const a = cW[q];
       const st = stamp0 + a;
       if (mk[m] === st) continue;
@@ -316,11 +301,11 @@ export class FS {
     // wake seeds
     const newIds: number[] = [];
     if (wake) {
+      if (seed === this.B.seed0) seed = this.seed = seed.slice(); // copy on write
       for (const s of wake) {
         const c = seed[s];
         seed[s] = 0;
         ink[s] = c;
-        this.born[s] = tNext;
         const id = this.wc.length;
         this.wc.push(c);
         this.wr.push(INF_RANGE);
@@ -332,18 +317,26 @@ export class FS {
         newIds.push(id);
       }
     }
-    // keep fronts that can still grow
+    // keep fronts that can still grow (filter in place)
     const alive: number[] = [];
     for (let a = 0; a < act.length; a++) {
       const id = act[a];
       const c = this.wc[id], r = this.wr[id];
       const list = next[a];
-      const keep: number[] = [];
+      let o = 0;
       for (let j = 0; j < list.length; j += 3) {
-        if (list[j + 2] > 0 || this.canGrow(list[j], list[j + 1], c, r)) keep.push(list[j], list[j + 1], list[j + 2]);
+        if (list[j + 2] > 0 || this.canGrow(list[j], list[j + 1], c, r)) {
+          if (o !== j) {
+            list[o] = list[j];
+            list[o + 1] = list[j + 1];
+            list[o + 2] = list[j + 2];
+          }
+          o += 3;
+        }
       }
-      this.fr[id] = keep;
-      if (keep.length) alive.push(id);
+      list.length = o;
+      this.fr[id] = list;
+      if (o) alive.push(id);
     }
     for (const id of newIds) {
       const f = this.fr[id];
@@ -369,7 +362,7 @@ export class FS {
         else if (this.seed[i]) r += '*';
         else if (this.ink[i]) {
           const ch = CODE_TO_CHAR[this.ink[i]];
-          r += this.mixed[i] ? ch : ch.toLowerCase();
+          r += isPrim(this.ink[i]) ? ch.toLowerCase() : ch;
         } else r += B.goal[i] === WHITE ? 'w' : '.';
       }
       rows.push(r);
@@ -552,6 +545,164 @@ export function greedyBot(B: Board, trials: number, rng: Rng): number {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Fast all-t=0 flood (boards without slow paper)
+// ---------------------------------------------------------------------------------------------
+
+const FL_CC = new Uint8Array(MAXN);
+const FL_CM = new Int32Array(MAXN);
+const FL_MASK = new Int32Array(MAXN);
+const FL_SEED = new Uint8Array(MAXN);
+const FL_INK = new Uint8Array(MAXN);
+
+export function hasSlow(B: Board): boolean {
+  for (let i = 0; i < B.n; i++) if (B.slow[i]) return true;
+  return false;
+}
+
+/**
+ * Plays an all-t=0 plan (cells in queue order) on a board WITHOUT slow paper. With every drop on
+ * beat 0 a front's distance equals the beat, so the game reduces to a layered flood. Exactly the
+ * same result as Sim/FS (see crossCheckFlood). Returns 1 when every target is met and nothing is
+ * wrong; fills `out` with the final inks when given (then it never stops early).
+ */
+export function floodT0(B: Board, cells: number[], out?: Uint8Array): number {
+  const n = B.n, nb = B.nb, wall = B.wall, gate = B.gate, goal = B.goal;
+  const ink = out || FL_INK;
+  ink.fill(0, 0, n);
+  const mask = FL_MASK, cc = FL_CC, cm = FL_CM, seed = FL_SEED;
+  mask.fill(0, 0, n);
+  for (let i = 0; i < n; i++) seed[i] = B.seed0[i];
+  const T = B.targets.length;
+  const early = !out;
+  const noWhites = B.whites.length === 0;
+  const waveR: number[] = [];
+  let met = 0, bad = false;
+  let frontier: number[] = [];
+  for (let q = 0; q < cells.length; q++) {
+    const i = cells[q], c = B.inkC[q];
+    waveR.push(B.inkR[q]);
+    if (ink[i]) return 0; // two drops on one cell: invalid
+    ink[i] = c;
+    mask[i] = 1 << q;
+    const g = goal[i];
+    if (g) {
+      if (g === c) met++;
+      else bad = true;
+    }
+    frontier.push(i);
+  }
+  if (early && bad) return 0;
+  let t = 0;
+  while (frontier.length) {
+    const fresh: number[] = [];
+    let wakes: number[] | null = null;
+    for (const f of frontier) {
+      const m = mask[f];
+      let prop = 0;
+      for (let w = 0; w < waveR.length; w++) if (m & (1 << w) && waveR[w] > t) prop |= 1 << w;
+      if (!prop) continue;
+      const c = ink[f];
+      const base = f * 4;
+      for (let k = 0; k < 4; k++) {
+        const j = nb[base + k];
+        if (j < 0 || wall[j]) continue;
+        if (seed[j]) {
+          if (!wakes) wakes = [j];
+          else if (wakes.indexOf(j) < 0) wakes.push(j);
+          continue;
+        }
+        if (ink[j]) continue;
+        const gt = gate[j];
+        if (gt && gt !== c) continue;
+        if (!cc[j]) fresh.push(j);
+        cc[j] |= c;
+        cm[j] |= prop;
+      }
+    }
+    t++;
+    const next: number[] = [];
+    for (const j of fresh) {
+      const b = cc[j];
+      ink[j] = b;
+      mask[j] = cm[j];
+      cc[j] = 0;
+      cm[j] = 0;
+      const g = goal[j];
+      if (g) {
+        if (g === b) met++;
+        else bad = true;
+      }
+      if (b === 1 || b === 2 || b === 4) next.push(j);
+    }
+    if (wakes) {
+      for (const sc of wakes) {
+        const c = seed[sc];
+        seed[sc] = 0;
+        ink[sc] = c;
+        mask[sc] = waveR.length < 31 ? 1 << waveR.length : 0;
+        waveR.push(INF_RANGE);
+        const g = goal[sc];
+        if (g) {
+          if (g === c) met++;
+          else bad = true;
+        }
+        next.push(sc);
+      }
+    }
+    if (early) {
+      if (bad) return 0;
+      if (met === T && noWhites) return 1;
+    }
+    frontier = next;
+  }
+  return !bad && met === T ? 1 : 0;
+}
+
+/** floodT0 vs FS on random boards without slow paper; returns mismatches. */
+export function crossCheckFlood(trials: number, seed = 3): number {
+  const rng = mulberry32(seed);
+  let bad = 0;
+  for (let k = 0; k < trials; k++) {
+    const w = 4 + Math.floor(rng() * 5), h = 4 + Math.floor(rng() * 7);
+    const map: string[] = [];
+    for (let y = 0; y < h; y++) {
+      let r = '';
+      for (let x = 0; x < w; x++) {
+        const q = rng();
+        r += q < 0.6 ? '.' : q < 0.7 ? '#' : q < 0.74 ? ' ' : q < 0.84 ? 'ryb'[Math.floor(rng() * 3)] : q < 0.9 ? 'RYB'[Math.floor(rng() * 3)] : '.';
+      }
+      map.push(r);
+    }
+    const nk = 1 + Math.floor(rng() * 5);
+    const inks: string[] = [];
+    for (let i = 0; i < nk; i++) inks.push('RYB'[Math.floor(rng() * 3)] + (rng() < 0.4 ? String(1 + Math.floor(rng() * 4)) : ''));
+    let B: Board;
+    try {
+      B = makeBoard({ id: 'f', map, goal: map.map((r) => '.'.repeat(r.length)), inks, solution: [] });
+    } catch {
+      continue;
+    }
+    const open = B.open.slice();
+    if (open.length < nk) continue;
+    for (let i = open.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tt = open[i];
+      open[i] = open[j];
+      open[j] = tt;
+    }
+    const cells = open.slice(0, nk);
+    const out = new Uint8Array(B.n);
+    floodT0(B, cells, out);
+    const r = play(B, cells.map((i) => ({ i, t: 0 })), false);
+    for (let i = 0; i < B.n; i++) if (out[i] !== r.sim.ink[i]) {
+      bad++;
+      break;
+    }
+  }
+  return bad;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Exhaustive solver
 // ---------------------------------------------------------------------------------------------
 
@@ -585,18 +736,14 @@ export interface SolveResult {
 /** Can the empty region around an unmet target still receive the colours it needs? (cheap dead-end test) */
 function hopeless(s: FS): boolean {
   const B = s.B;
-  if (!s.settled()) return false;
-  // remaining colours
-  let rem = 0;
-  for (let q = s.pi; q < B.inkC.length; q++) rem |= B.inkC[q];
+  // colours that can still arrive anywhere: remaining inks, live fronts, sleeping seeds
+  let avail = 0;
+  for (let q = s.pi; q < B.inkC.length; q++) avail |= B.inkC[q];
+  for (const id of s.act) avail |= s.wc[id];
+  for (let i = 0; i < B.n; i++) if (s.seed[i]) avail |= s.seed[i];
   for (const t of B.targets) {
     if (s.ink[t]) continue;
-    if ((B.goal[t] & rem) !== B.goal[t] && !s.seed[t]) {
-      // could a sleeping seed still help? only if a seed is in the same empty region; keep it simple
-      let anySeed = false;
-      for (let i = 0; i < B.n; i++) if (s.seed[i]) { anySeed = true; break; }
-      if (!anySeed) return true;
-    }
+    if ((B.goal[t] & avail) !== B.goal[t]) return true;
   }
   return false;
 }
@@ -614,11 +761,53 @@ export function solve(B: Board, opts: SolveOptions = {}): SolveResult {
   const buf: number[][] = [];
   for (let k = 0; k <= K + 2; k++) buf.push([]);
   let abort = false;
+  // All-t=0 parity prune (exact): without slow paper or seeds every wave reaches a cell only on beats
+  // with the parity of (drop -> cell) distance, so a mixed target needs drops of both colours on the
+  // same checkerboard colour.
+  let paritySafe = true;
+  for (let i = 0; i < B.n && paritySafe; i++) if (B.slow[i] || B.seed0[i]) paritySafe = false;
+  const fastT0 = !hasSlow(B);
+  const t0cells: number[] = [];
+  const mixPairs: [number, number][] = [];
+  if (paritySafe) {
+    const seen = new Set<number>();
+    for (const t of B.targets) {
+      const g = B.goal[t];
+      if (g === 3 || g === 5 || g === 6) seen.add(g);
+    }
+    for (const g of seen) {
+      const a = g & 1 ? 1 : 2, c = g & 4 ? 4 : 2;
+      mixPairs.push([a, g & ~a]);
+      void c;
+    }
+  }
+  // remaining-colour suffix masks
+  const restCols: number[] = new Array(K + 1).fill(0);
+  for (let q = K - 1; q >= 0; q--) restCols[q] = restCols[q + 1] | B.inkC[q];
+  function parityDead(): boolean {
+    const placed = plan.length;
+    for (const [c1, c2] of mixPairs) {
+      if (restCols[placed] & (c1 | c2)) continue; // still to come
+      let p1 = 0, p2 = 0;
+      for (let q = 0; q < placed; q++) {
+        const i = plan[q].i;
+        const par = 1 << (((i % B.w) + Math.floor(i / B.w)) & 1);
+        if (B.inkC[q] === c1) p1 |= par;
+        else if (B.inkC[q] === c2) p2 |= par;
+      }
+      if (!(p1 & p2)) return true;
+    }
+    return false;
+  }
 
+  const noWhites = B.whites.length === 0;
   function leaf(s: FS) {
-    while (!s.settled()) {
-      s.step();
+    for (;;) {
       if (s.bad) return;
+      if (s.met === T && noWhites) break; // targets never change once inked
+      if (s.settled()) break;
+      if (hopeless(s)) return;
+      s.step();
     }
     if (s.met !== T) return;
     res.solutions++;
@@ -628,6 +817,48 @@ export function solve(B: Board, opts: SolveOptions = {}): SolveResult {
     if (!timed) res.noWait = true;
     if (res.examples.length < keep) res.examples.push(plan.slice());
     if (res.solutions >= maxSol) abort = true;
+  }
+
+  // fast path: all-t=0 enumeration with the layered flood
+  if (opts.onlyT0 && !hasSlow(B)) {
+    const cells: number[] = [];
+    const used = new Uint8Array(B.n);
+    const open = B.open;
+    const rec = (q: number) => {
+      if (abort) return;
+      if (++res.nodes > budget) {
+        res.complete = false;
+        abort = true;
+        return;
+      }
+      if (q === K) {
+        if (floodT0(B, cells)) {
+          res.solutions++;
+          res.byTimed[0]++;
+          res.noWait = true;
+          if (res.examples.length < keep) res.examples.push(cells.map((i) => ({ i, t: 0 })));
+          if (res.solutions >= maxSol) abort = true;
+        }
+        return;
+      }
+      const c = B.inkC[q];
+      const minIdx = q > 0 && B.inkC[q - 1] === c && B.inkR[q - 1] === B.inkR[q] ? cells[q - 1] + 1 : 0;
+      for (const i of open) {
+        if (i < minIdx || used[i]) continue;
+        const g = B.goal[i];
+        if (g && g !== c) continue;
+        cells.push(i);
+        plan.push({ i, t: 0 });
+        used[i] = 1;
+        if (!(mixPairs.length && parityDead())) rec(q + 1);
+        used[i] = 0;
+        cells.pop();
+        plan.pop();
+        if (abort) return;
+      }
+    };
+    rec(0);
+    return res;
   }
 
   function dfs(s: FS, depth: number) {
@@ -648,13 +879,39 @@ export function solve(B: Board, opts: SolveOptions = {}): SolveResult {
       let minIdx = 0;
       if (s.pi > 0 && plan[s.pi - 1].t === s.tick && B.inkC[s.pi - 1] === c && B.inkR[s.pi - 1] === B.inkR[s.pi]) minIdx = plan[s.pi - 1].i + 1;
       const cells = s.droppable(buf[depth]).slice();
+      const allT0 = s.tick === 0;
       for (const i of cells) {
         if (i < minIdx) continue;
         const g = B.goal[i];
         if (g && g !== c) continue;
-        const s2 = s.pi === K - 1 ? s.clone() : s.clone();
-        s2.drop(i);
         plan.push({ i, t: s.tick });
+        if (allT0 && mixPairs.length && parityDead()) {
+          plan.pop();
+          continue;
+        }
+        if (allT0 && fastT0 && s.pi === K - 1) {
+          // last ink, everything on beat 0: exact layered flood
+          if (++res.nodes > budget) {
+            res.complete = false;
+            abort = true;
+            plan.pop();
+            return;
+          }
+          t0cells.length = 0;
+          for (const p of plan) t0cells.push(p.i);
+          if (floodT0(B, t0cells)) {
+            res.solutions++;
+            res.byTimed[0]++;
+            res.noWait = true;
+            if (res.examples.length < keep) res.examples.push(plan.slice());
+            if (res.solutions >= maxSol) abort = true;
+          }
+          plan.pop();
+          if (abort) return;
+          continue;
+        }
+        const s2 = s.clone();
+        s2.drop(i);
         dfs(s2, depth + 1);
         plan.pop();
         if (abort) return;
@@ -725,7 +982,7 @@ export function analyzeSolution(B: Board, plan: Plan): SolutionInfo {
         territory[q]++;
       }
     }
-    if (s.mixed[i]) {
+    if (s.ink[i] && !isPrim(s.ink[i])) {
       mixedCells.push(i);
       if (s.ink[i] === 7) mud++;
       const ids: number[] = [];
@@ -848,55 +1105,91 @@ export interface Metrics {
   diff: number;
 }
 
-export function difficultyScore(m: { random: number; greedy: number; solutions: number | null; needsTiming: boolean | null; timedDrops: number; inks: number; cells: number; mechCount: number }): number {
-  const r = Math.max(m.random, 0.0002);
-  const rTerm = Math.min(1, -Math.log10(r) / 3.7); // 0.0002 -> 1, 0.06 -> 0.33
-  const gTerm = 1 - Math.min(1, m.greedy / 0.6);
-  const iTerm = Math.min(1, (m.inks - 1) / 4);
-  let tTerm = 0;
-  if (m.timedDrops > 0) tTerm = 0.35 + 0.25 * Math.min(2, m.timedDrops - 1) / 2;
-  if (m.needsTiming) tTerm += 0.4;
+export interface DiffInput {
+  random: number;
+  greedy: number;
+  solutions: number | null;
+  needsTiming: boolean | null;
+  timedDrops: number;
+  inks: number;
+  cells: number;
+  /** Number of mechanics used (including drop). */
+  mechCount: number;
+  targets: number;
+}
+
+/**
+ * Difficulty 0..100 from the measurements:
+ *  - search bits: log2(plays) - log2(solutions)  (how much the goals narrow things down)
+ *  - timing: waiting proven necessary, number of timed drops
+ *  - rules in play, ink count, bot failure rates, and how few goal cells guide the player.
+ */
+export function difficultyScore(m: DiffInput): number {
+  const planBits = m.inks * Math.log2(Math.max(2, m.cells)) + (m.inks - 1) * Math.log2(7);
+  let solBits: number;
+  if (m.solutions !== null && m.solutions > 0) solBits = Math.log2(m.solutions);
+  else if (m.random > 0) solBits = Math.max(0, planBits + Math.log2(m.random));
+  else solBits = 2;
+  const bitsTerm = Math.min(1, Math.max(0, (planBits - solBits - 6) / 26));
+  let tTerm = m.needsTiming === true ? 0.55 : m.timedDrops > 0 ? 0.25 : 0;
+  if (m.timedDrops > 1) tTerm += 0.2 * Math.min(2, m.timedDrops - 1);
   tTerm = Math.min(1, tTerm);
-  let sTerm = 0.5;
-  if (m.solutions !== null && m.solutions > 0) sTerm = 1 / (1 + Math.log2(m.solutions) / 3);
-  const zTerm = Math.min(1, Math.max(0, (m.cells - 16) / 50));
-  const mTerm = Math.min(1, m.mechCount / 9);
-  const v = 0.24 * rTerm + 0.2 * gTerm + 0.15 * iTerm + 0.17 * tTerm + 0.08 * sTerm + 0.06 * zTerm + 0.1 * mTerm;
+  const mechTerm = Math.min(1, Math.max(0, (m.mechCount - 1) / 9));
+  const inkTerm = Math.min(1, (m.inks - 1) / 4);
+  const gTerm = 1 - Math.min(1, m.greedy / 0.5);
+  const rTerm = Math.min(1, -Math.log10(Math.max(m.random, 1 / 4000)) / 3.6);
+  const infoTerm = 1 - Math.min(1, m.targets / Math.max(1, m.cells * 0.45));
+  const v = 0.25 * bitsTerm + 0.18 * tTerm + 0.15 * mechTerm + 0.12 * inkTerm + 0.1 * gTerm + 0.1 * rTerm + 0.1 * infoTerm;
   return Math.max(0, Math.min(100, Math.round(v * 100)));
 }
 
 export interface MeasureOptions {
   randomTrials?: number;
   greedyTrials?: number;
+  /** Bot seed; defaults to a hash of the level content (map, goal, inks) so the numbers never depend on the id. */
   seed?: number;
-  exhaustive?: boolean;
+  /** Node budget of the full (timed) exhaustive search that counts solutions. */
   nodeBudget?: number;
+  /** Node budget of the all-t=0 search that decides needsTiming. */
   t0Budget?: number;
+  /** Already proven by the caller (generator): skip the all-t=0 search. */
+  needsTimingHint?: boolean | null;
 }
 
-/** Full measurement of a level (bots + exhaustive when tractable). */
+export function contentSeed(def: LevelDef): number {
+  const s = def.map.join('/') + '|' + def.goal.join('/') + '|' + def.inks.join(',');
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/** Budgets used everywhere (generator and verifier) so metrics are identical. */
+export const MEASURE_BUDGET = { random: 2000, greedy: 300, node: 300000, t0: 1500000 };
+
+/** Full measurement of a level (bots + exhaustive searches). Deterministic. */
 export function measure(def: LevelDef, opts: MeasureOptions = {}): Metrics {
   const B = makeBoard(def);
-  const rng = mulberry32((opts.seed ?? 12345) ^ 0x9e3779b9);
-  const random = randomBot(B, opts.randomTrials ?? 2000, rng);
-  const greedy = greedyBot(B, opts.greedyTrials ?? 300, rng);
+  const rng = mulberry32((opts.seed ?? contentSeed(def)) ^ 0x9e3779b9);
+  const random = randomBot(B, opts.randomTrials ?? MEASURE_BUDGET.random, rng);
+  const greedy = greedyBot(B, opts.greedyTrials ?? MEASURE_BUDGET.greedy, rng);
   const plan = dropsToPlan(B, def.solution);
   const info = analyzeSolution(B, plan);
+  let needsTiming: boolean | null = null;
+  if (opts.needsTimingHint !== undefined && opts.needsTimingHint !== null) needsTiming = opts.needsTimingHint;
+  else {
+    const t0 = solve(B, { onlyT0: true, nodeBudget: opts.t0Budget ?? MEASURE_BUDGET.t0, maxSolutions: 1 });
+    if (t0.noWait) needsTiming = false;
+    else if (t0.complete) needsTiming = true;
+  }
   let solutions: number | null = null;
   let complete = false;
-  let needsTiming: boolean | null = null;
-  if (opts.exhaustive !== false) {
-    const sr = solve(B, { nodeBudget: opts.nodeBudget ?? 1.5e6, maxSolutions: 5000 });
-    if (sr.complete) {
-      solutions = sr.solutions;
-      complete = true;
-      needsTiming = !sr.noWait;
-    } else if (sr.noWait) needsTiming = false;
-    if (needsTiming === null) {
-      const t0 = solve(B, { onlyT0: true, nodeBudget: opts.t0Budget ?? 2.5e6, maxSolutions: 1 });
-      if (t0.noWait) needsTiming = false;
-      else if (t0.complete) needsTiming = true;
-    }
+  const sr = solve(B, { nodeBudget: opts.nodeBudget ?? MEASURE_BUDGET.node, maxSolutions: 5000 });
+  if (sr.complete) {
+    solutions = sr.solutions;
+    complete = true;
   }
   const mech = usesOf(def, info).length;
   let cells = 0;
@@ -906,7 +1199,7 @@ export function measure(def: LevelDef, opts: MeasureOptions = {}): Metrics {
     timedDrops: info.timedDrops, settleTick: info.settleTick, targets: B.targets.length + B.whites.length,
     inks: B.inkC.length, cells, diff: 0,
   };
-  m.diff = difficultyScore({ random, greedy, solutions, needsTiming, timedDrops: info.timedDrops, inks: m.inks, cells, mechCount: mech });
+  m.diff = difficultyScore({ random, greedy, solutions, needsTiming, timedDrops: info.timedDrops, inks: m.inks, cells, mechCount: mech, targets: m.targets });
   return m;
 }
 
@@ -968,4 +1261,55 @@ export function crossCheck(defs: LevelDef[], plansPer: number, seed = 7): number
     }
   }
   return bad;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Report
+// ---------------------------------------------------------------------------------------------
+
+export interface ReportRow { def: LevelDef & { tier?: string }; metrics: Metrics; uses: MechanicKey[] }
+
+const pct = (x: number) => (x * 100).toFixed(x < 0.1 ? 2 : 1);
+
+export function buildReport(rows: ReportRow[]): string {
+  const out: string[] = [];
+  out.push('# Inkbloom level report');
+  out.push('');
+  out.push('Generated by `tools/gen-levels.ts` / `tools/verify-levels.ts`. Bots: random bot 2000 trials, greedy bot 300 trials (seeded by the level content).');
+  out.push('`needs timing`: yes = proven that no all-t=0 solution exists (exhaustive), no = a no-wait solution exists, ? = search too large.');
+  out.push('`solutions`: canonical solutions found by the exhaustive solver (cell x beat; "-" = search too large).');
+  out.push('');
+  const groups = new Map<string, ReportRow[]>();
+  for (const r of rows) {
+    const g = r.def.tier ? 'Daily · ' + r.def.tier : 'Chapter ' + r.def.id.slice(1, r.def.id.indexOf('-'));
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g)!.push(r);
+  }
+  out.push('## Summary');
+  out.push('');
+  out.push('| group | levels | avg diff | needs timing | ≥2 timed drops | random % (min–max) | greedy % (min–max) | max inks | max board |');
+  out.push('|---|---|---|---|---|---|---|---|---|');
+  for (const [g, rs] of groups) {
+    const avg = rs.reduce((a, r) => a + r.metrics.diff, 0) / rs.length;
+    const nt = rs.filter((r) => r.metrics.needsTiming === true).length;
+    const t2 = rs.filter((r) => r.metrics.timedDrops >= 2).length;
+    const rnd = rs.map((r) => r.metrics.random), grd = rs.map((r) => r.metrics.greedy);
+    const mi = Math.max(...rs.map((r) => r.metrics.inks));
+    const mb = rs.reduce((b, r) => (r.def.map[0].length * r.def.map.length > b[0] * b[1] ? [r.def.map[0].length, r.def.map.length] : b), [0, 0]);
+    out.push('| ' + g + ' | ' + rs.length + ' | ' + avg.toFixed(1) + ' | ' + nt + ' (' + Math.round((nt * 100) / rs.length) + '%) | ' + t2 + ' (' + Math.round((t2 * 100) / rs.length) + '%) | ' + pct(Math.min(...rnd)) + '–' + pct(Math.max(...rnd)) + ' | ' + pct(Math.min(...grd)) + '–' + pct(Math.max(...grd)) + ' | ' + mi + ' | ' + mb[0] + '×' + mb[1] + ' |');
+  }
+  for (const [g, rs] of groups) {
+    out.push('');
+    out.push('## ' + g);
+    out.push('');
+    out.push('| id | size | inks | tag | intro | diff | random % | greedy % | needs timing | timed | solutions | uses | solution |');
+    out.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+    for (const r of rs) {
+      const d = r.def, m = r.metrics;
+      const nt = m.needsTiming === true ? 'yes' : m.needsTiming === false ? 'no' : '?';
+      out.push('| ' + d.id + ' | ' + d.map[0].length + '×' + d.map.length + ' | ' + d.inks.join(' ') + ' | ' + (d.tag || '') + ' | ' + (d.intro || '') + (d.guided ? ' (guided)' : '') + ' | ' + m.diff + ' | ' + pct(m.random) + ' | ' + pct(m.greedy) + ' | ' + nt + ' | ' + m.timedDrops + ' | ' + (m.solutions === null ? '-' : m.solutions) + ' | ' + r.uses.filter((u) => u !== 'drop').join(' ') + ' | `' + solutionString(d) + '` |');
+    }
+  }
+  out.push('');
+  return out.join('\n');
 }

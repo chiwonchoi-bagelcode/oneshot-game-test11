@@ -37,6 +37,12 @@ export interface PlayOpts {
   group?: string;
   /** Long sustained voice (pads/bass): stolen last. */
   sustain?: boolean;
+  /** Looped instruments (pad, sub): fade-in time constant (s). */
+  attack?: number;
+  /** Looped instruments: seconds before the automatic release. */
+  hold?: number;
+  /** Looped instruments: release time constant (s). */
+  rel?: number;
 }
 
 interface Voice {
@@ -75,6 +81,8 @@ export interface CoreOptions {
   clock?: Clock;
   /** Reverb tail length (s). */
   reverb?: number;
+  /** Don't build the IR in the constructor; call buildReverb() later (live engine). */
+  deferReverb?: boolean;
 }
 
 const PANS = [-0.55, 0, 0.55];
@@ -87,8 +95,8 @@ export class Core {
   /** When set (offline harness), replaces ctx.currentTime as "now". */
   virtualNow: number | null = null;
   readonly stats: CoreStats = { voicesCreated: 0, voicesStolen: 0, maxActive: 0, skippedSilent: 0 };
-  /** Audio time at which the last scheduled voice ends (for idle-suspend). */
-  lastSoundEnd = 0;
+  /** Test hook: when set, only voices whose group ends with this suffix play. */
+  debugSolo: string | null = null;
 
   private voices: Voice[] = [];
   private master: GainNode;
@@ -97,11 +105,39 @@ export class Core {
   private canPan: boolean;
   private nodes: AudioNode[] = [];
 
+  private conv: ConvolverNode;
+  private reverbSecs: number;
+  private reverbMono: boolean;
+
+  /** Generate the impulse response and load it into the convolver (idempotent). */
+  buildReverb(): void {
+    const conv = this.conv;
+    if (!conv || conv.buffer) return;
+    const ctx = this.ctx;
+    const sr = ctx.sampleRate;
+    const secs = this.reverbSecs;
+    let ir: AudioBuffer;
+    if (this.reverbMono) {
+      ir = ctx.createBuffer(1, Math.floor(secs * sr), sr);
+      setChannel(ir, 0, impulse(sr, secs, 0));
+    } else {
+      const L = impulse(sr, secs, 0);
+      ir = ctx.createBuffer(2, L.length, sr);
+      setChannel(ir, 0, L);
+      setChannel(ir, 1, impulse(sr, secs, 1));
+    }
+    conv.buffer = ir;
+  }
+
+  get reverbReady(): boolean {
+    return !!this.conv.buffer;
+  }
+
   constructor(ctx: BaseAudioContext, bank: Bank, opts: CoreOptions = {}) {
     this.ctx = ctx;
     this.bank = bank;
     this.clock = opts.clock || { offset: 0 };
-    this.maxVoices = opts.lowPower ? 16 : 24;
+    this.maxVoices = opts.lowPower ? 20 : 24;
     this.canPan = typeof (ctx as AudioContext).createStereoPanner === 'function';
 
     // master: compressor (glue + safety) → trim → soft clip (hard ceiling just under -1 dBFS)
@@ -112,7 +148,7 @@ export class Core {
     comp.ratio.value = 3.5;
     comp.attack.value = 0.004;
     comp.release.value = 0.22;
-    const trim = (this.trim = this.gain(0.72));
+    const trim = (this.trim = this.gain(1));
     const clip = this.track(ctx.createWaveShaper());
     clip.curve = softClipCurve();
     master.connect(comp);
@@ -120,25 +156,27 @@ export class Core {
     trim.connect(clip);
     clip.connect(ctx.destination);
 
-    // reverb send/return
+    // reverb send/return. Low-power: mono send + 1.0 s mono IR = one convolution instead of two.
     const rIn = this.gain(1);
-    const conv = this.track(ctx.createConvolver());
+    const conv = (this.conv = this.track(ctx.createConvolver()));
     conv.normalize = false;
-    const secs = opts.reverb || (opts.lowPower ? 1.2 : 1.8);
-    const L = impulse(ctx.sampleRate, secs, 0);
-    const R = impulse(ctx.sampleRate, secs, 1);
-    const ir = ctx.createBuffer(2, L.length, ctx.sampleRate);
-    setChannel(ir, 0, L);
-    setChannel(ir, 1, R);
-    conv.buffer = ir;
+    this.reverbSecs = opts.reverb || (opts.lowPower ? 1.0 : 1.8);
+    this.reverbMono = !!opts.lowPower;
+    if (opts.lowPower) {
+      rIn.channelCount = 1;
+      rIn.channelCountMode = 'explicit';
+    }
+    // The IR (and the convolver's FFT set-up) costs tens of ms on a slow phone: the live engine
+    // defers it out of the unlocking gesture; a null-buffer convolver simply outputs silence.
+    if (!opts.deferReverb) this.buildReverb();
     const rOut = this.gain(0.9);
     rIn.connect(conv);
     conv.connect(rOut);
     rOut.connect(master);
 
     this.buses = {
-      sfx: this.makeBus(master, rIn, 0.1, 0.3),
-      music: this.makeBus(master, rIn, 0.18, 0.42),
+      sfx: this.makeBus(master, rIn, 0.06, 0.2),
+      music: this.makeBus(master, rIn, 0.15, 0.36),
     };
   }
 
@@ -172,7 +210,7 @@ export class Core {
           const sp = this.track((this.ctx as AudioContext).createStereoPanner());
           sp.pan.value = p;
           n = sp;
-        } else n = this.gain(1);
+        } else n = this.gain(Math.SQRT1_2); // mono→stereo up-mix doubles power; match the equal-power panners
         n.connect(duck);
         n.connect(w ? sHi : sLo);
         ch.push(n);
@@ -229,6 +267,13 @@ export class Core {
   get activeVoices(): number {
     this.prune(this.now());
     return this.voices.length;
+  }
+
+  /** Audio time until which something is (or is scheduled to be) audible. */
+  busyUntil(): number {
+    let m = 0;
+    for (const v of this.voices) if (!v.dead && v.end > m) m = v.end;
+    return m;
   }
 
   /** Voices sounding (or scheduled) at audio time t. */
@@ -304,21 +349,26 @@ export class Core {
   play(name: string, midi: number, t: number, o: PlayOpts = {}): boolean {
     const bus = this.buses[o.bus || 'sfx'];
     const gain = (o.gain == null ? 0.5 : o.gain);
+    if (!(t >= 0) || !(gain < 8)) return false; // NaN / Infinity guard: never throw from automation calls
     if (bus.level <= 0 || gain <= 0) {
       this.stats.skippedSilent++;
       return false;
     }
+    if (this.debugSolo != null && (o.group || '').slice(-this.debugSolo.length) !== this.debugSolo) return false;
     const s = this.bank.get(name, midi);
     if (!s) return false;
     const ctx = this.ctx;
     const now = this.now();
     if (t < now) t = now;
-    const rate = s.rate * (o.rate || 1);
+    const rate = s.rate * (o.rate && o.rate > 0 && o.rate < 16 ? o.rate : 1);
     const off0 = o.tail ? s.buf.duration - o.tail * rate : o.offset || 0;
     const off = Math.max(0, Math.min(off0, s.buf.duration - 0.01));
     let dur = (s.buf.duration - off) / rate;
     let fade = 0;
-    if (o.maxDur && o.maxDur < dur) {
+    const hold = o.hold || 4;
+    const rel = o.rel || 0.4;
+    if (s.loop) dur = hold + rel * 6;
+    else if (o.maxDur && o.maxDur < dur) {
       dur = o.maxDur;
       fade = Math.min(0.12, dur * 0.35);
     }
@@ -326,6 +376,7 @@ export class Core {
 
     const src = ctx.createBufferSource();
     src.buffer = s.buf;
+    if (s.loop) src.loop = true;
     const pr = src.playbackRate;
     pr.value = rate;
     let rateEnd = t;
@@ -353,7 +404,12 @@ export class Core {
       }
     }
     const g = ctx.createGain();
-    g.gain.value = gain;
+    if (s.loop) {
+      g.gain.value = 0;
+      g.gain.setValueAtTime(0, t);
+      g.gain.setTargetAtTime(gain, t, (o.attack || 0.5) / 3);
+      g.gain.setTargetAtTime(0, t + hold, rel);
+    } else g.gain.value = gain;
     if (fade > 0) {
       g.gain.setValueAtTime(gain, t + dur - fade);
       g.gain.linearRampToValueAtTime(0, t + dur);
@@ -384,7 +440,6 @@ export class Core {
       }
     };
     this.stats.voicesCreated++;
-    if (v.end > this.lastSoundEnd) this.lastSoundEnd = v.end;
     const live = this.voicesAt(t);
     if (live > this.stats.maxActive) this.stats.maxActive = live;
     return true;

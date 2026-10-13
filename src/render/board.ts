@@ -28,6 +28,8 @@ const TAU = Math.PI * 2;
 const HALF_PI = Math.PI / 2;
 /** Closed sides overlap the neighbour by this much (css px) so same-colour cells join without seams. */
 const EXT = 0.4;
+/** Margin (css px) around a growth sprite. */
+const SPR_M = 3;
 
 // Side bits (open sides of a cell shape) and corner bits (concave corners).
 const S_T = 1, S_R = 2, S_B = 4, S_L = 8;
@@ -37,13 +39,14 @@ const C_TL = 1, C_TR = 2, C_BR = 4, C_BL = 8;
 const FX_SPLASH = 1, FX_BLOOM = 2, FX_BURST = 3, FX_SPARK = 4, FX_REJECT = 5, FX_POP = 6, FX_WRONG = 7;
 
 interface Pal {
-  body: string; mid: string; edge: string; halo: string; light: string; deep: string;
+  body: string; mid: string; mid2: string; edge: string; halo: string; light: string; deep: string; wet: string;
   glyph: string; ring: string; wash: string;
   pat: CanvasPattern | string;
+  washPat: CanvasPattern | null;
   glow: HTMLCanvasElement;
 }
 
-interface Grow { t0: number; dur: number; mode: 0 | 1 | 2; sides: number }
+interface Grow { t0: number; dur: number; mode: 0 | 1 | 2; sides: number; spr?: HTMLCanvasElement | null; sig?: number }
 interface Fx { kind: number; t0: number; dur: number; idx: number; c: number; b: number; x: number; y: number; v: number }
 interface Particle { x: number; y: number; dx: number; dy: number; r: number; color: string; t0: number; life: number; star: boolean; g: number }
 interface Tendril { idx: number; side: number; c: number }
@@ -75,17 +78,30 @@ function rrect(ctx: CanvasPath, x: number, y: number, w: number, h: number, r: n
   ctx.closePath();
 }
 
-/** Wobbly straight side (zero wobble at both ends so neighbouring cells line up). */
-function side(ctx: CanvasPath, x0: number, y0: number, x1: number, y1: number, amp: number, p1: number, p2: number): void {
+/**
+ * Wobbly straight side. The offset is a function of the absolute position along the grid line,
+ * so a straight run of cells gets one continuous, non-periodic edge. It fades to zero only where
+ * the side meets a rounded corner (fa / fb).
+ */
+function side(ctx: CanvasPath, x0: number, y0: number, x1: number, y1: number, amp: number, line: number, unit: number, fa: boolean, fb: boolean): void {
   if (amp <= 0.05) { ctx.lineTo(x1, y1); return; }
   const dx = x1 - x0, dy = y1 - y0;
   const len = Math.sqrt(dx * dx + dy * dy) || 1;
   const nx = dy / len, ny = -dx / len; // outward for clockwise traversal
-  const N = 6;
+  const horiz = Math.abs(dx) > Math.abs(dy);
+  const a = hash01(line, 1) * TAU, b = hash01(line, 2) * TAU, c = hash01(line, 3) * TAU;
+  const N = Math.max(4, Math.min(10, Math.round(len / 5)));
   for (let j = 1; j <= N; j++) {
     const t = j / N;
-    const o = j === N ? 0 : amp * Math.sin(Math.PI * t) * (0.65 * Math.sin(TAU * (t + p1)) + 0.35 * Math.sin(TAU * (2 * t + p2)));
-    ctx.lineTo(x0 + dx * t + nx * o, y0 + dy * t + ny * o);
+    const px = x0 + dx * t, py = y0 + dy * t;
+    let o = 0;
+    if (j < N || !fb) {
+      const u = (horiz ? px : py) / unit;
+      o = amp * (0.55 * Math.sin(5.1 * u + a) + 0.3 * Math.sin(11.3 * u + b) + 0.15 * Math.sin(23.7 * u + c));
+      if (fa) o *= Math.min(1, t * 3.5);
+      if (fb) o *= Math.min(1, (1 - t) * 3.5);
+    }
+    ctx.lineTo(px + nx * o, py + ny * o);
   }
 }
 
@@ -93,15 +109,18 @@ function side(ctx: CanvasPath, x0: number, y0: number, x1: number, y1: number, a
  * Path of one cell of a region: open sides are inset by `inset` (and wobble), closed sides reach
  * EXT past the cell edge, convex corners are rounded, concave corners get a small notch.
  */
-function cellPath(ctx: CanvasPath, x: number, y: number, s: number, open: number, concave: number, inset: number, rad: number, amp: number, seed: number): void {
+export function cellPath(ctx: CanvasPath, x: number, y: number, s: number, gm: number, inset: number, rad: number, amp: number): void {
+  const open = gm & 15, concave = (gm >> 4) & 15, diag = (gm >> 8) & 15;
+  // Line ids: one per grid line and side orientation, so a straight run shares its wobble.
+  const gx = Math.round(x / s), gy = Math.round(y / s);
+  const lT = gy * 4 + 1000, lB = (gy + 1) * 4 + 2000, lL = gx * 4 + 3000, lR = (gx + 1) * 4 + 4000;
   const xl = open & S_L ? x + inset : x - EXT;
   const xr = open & S_R ? x + s - inset : x + s + EXT;
   const yt = open & S_T ? y + inset : y - EXT;
   const yb = open & S_B ? y + s - inset : y + s + EXT;
   const r = Math.max(0.5, Math.min(rad, (xr - xl) / 2, (yb - yt) / 2));
   const notch = inset > 0.2;
-  const ph = (k: number) => hash01(seed, k);
-  // TL
+    // TL
   if ((open & S_T) && (open & S_L)) { ctx.moveTo(xl, yt + r); ctx.arc(xl + r, yt + r, r, Math.PI, Math.PI * 1.5); }
   else if (notch && (concave & C_TL)) { ctx.moveTo(x - EXT, y + inset); ctx.arc(x, y, inset, HALF_PI, 0, true); ctx.lineTo(x + inset, y - EXT); }
   else ctx.moveTo(xl, yt);
@@ -110,7 +129,7 @@ function cellPath(ctx: CanvasPath, x: number, y: number, s: number, open: number
   if ((open & S_T) && (open & S_R)) { ex = xr - r; ey = yt; }
   else if (notch && (concave & C_TR)) { ex = x + s - inset; ey = y - EXT; }
   else { ex = xr; ey = yt; }
-  if (open & S_T) side(ctx, (open & S_L) ? xl + r : xl, yt, ex, ey, amp, ph(1), ph(2)); else ctx.lineTo(ex, ey);
+  if (open & S_T) side(ctx, (open & S_L) ? xl + r : xl, yt, ex, ey, amp, lT, s, !!(open & S_L) || !!(diag & C_TL), !!(open & S_R) || !!(diag & C_TR)); else ctx.lineTo(ex, ey);
   if ((open & S_T) && (open & S_R)) ctx.arc(xr - r, yt + r, r, Math.PI * 1.5, TAU);
   else if (notch && (concave & C_TR)) { ctx.arc(x + s, y, inset, Math.PI, HALF_PI, true); ctx.lineTo(x + s + EXT, y + inset); }
   // right side → BR
@@ -119,7 +138,7 @@ function cellPath(ctx: CanvasPath, x: number, y: number, s: number, open: number
   if ((open & S_R) && (open & S_B)) { ex = xr; ey = yb - r; }
   else if (notch && (concave & C_BR)) { ex = x + s + EXT; ey = y + s - inset; }
   else { ex = xr; ey = yb; }
-  if (open & S_R) side(ctx, sx, sy, ex, ey, amp, ph(3), ph(4)); else ctx.lineTo(ex, ey);
+  if (open & S_R) side(ctx, sx, sy, ex, ey, amp, lR, s, !!(open & S_T) || !!(diag & C_TR), !!(open & S_B) || !!(diag & C_BR)); else ctx.lineTo(ex, ey);
   if ((open & S_R) && (open & S_B)) ctx.arc(xr - r, yb - r, r, 0, HALF_PI);
   else if (notch && (concave & C_BR)) { ctx.arc(x + s, y + s, inset, Math.PI * 1.5, Math.PI, true); ctx.lineTo(x + s - inset, y + s + EXT); }
   // bottom side → BL
@@ -128,7 +147,7 @@ function cellPath(ctx: CanvasPath, x: number, y: number, s: number, open: number
   if ((open & S_B) && (open & S_L)) { ex = xl + r; ey = yb; }
   else if (notch && (concave & C_BL)) { ex = x + inset; ey = y + s + EXT; }
   else { ex = xl; ey = yb; }
-  if (open & S_B) side(ctx, bx, by, ex, ey, amp, ph(5), ph(6)); else ctx.lineTo(ex, ey);
+  if (open & S_B) side(ctx, bx, by, ex, ey, amp, lB, s, !!(open & S_R) || !!(diag & C_BR), !!(open & S_L) || !!(diag & C_BL)); else ctx.lineTo(ex, ey);
   if ((open & S_B) && (open & S_L)) ctx.arc(xl + r, yb - r, r, HALF_PI, Math.PI);
   else if (notch && (concave & C_BL)) { ctx.arc(x, y + s, inset, 0, Math.PI * 1.5, true); ctx.lineTo(x - EXT, y + s - inset); }
   // left side → TL start
@@ -137,7 +156,7 @@ function cellPath(ctx: CanvasPath, x: number, y: number, s: number, open: number
   if ((open & S_T) && (open & S_L)) { ex = xl; ey = yt + r; }
   else if (notch && (concave & C_TL)) { ex = x - EXT; ey = y + inset; }
   else { ex = xl; ey = yt; }
-  if (open & S_L) side(ctx, lx, ly, ex, ey, amp, ph(7), ph(8)); else ctx.lineTo(ex, ey);
+  if (open & S_L) side(ctx, lx, ly, ex, ey, amp, lL, s, !!(open & S_B) || !!(diag & C_BL), !!(open & S_T) || !!(diag & C_TL)); else ctx.lineTo(ex, ey);
   ctx.closePath();
 }
 
@@ -193,13 +212,25 @@ export class BoardRenderer {
   private sparkle: HTMLCanvasElement | null = null;
   private dropSprites: HTMLCanvasElement[] = [];
   private paperMask: HTMLCanvasElement | null = null;
+  private paperLayer: HTMLCanvasElement | null = null;
   private boardClip: Path2D | null = null;
 
   private stat: HTMLCanvasElement | null = null;
   private statFin: HTMLCanvasElement | null = null;
   private inkC: HTMLCanvasElement | null = null;
   private inkFin: HTMLCanvasElement | null = null;
-  private dyn: HTMLCanvasElement | null = null;
+  /** stat + inkC pre-composited: one full blit per frame. */
+  private base: HTMLCanvasElement | null = null;
+  private baseDirty = true;
+  /** Dirty rect of the base (device px, relative to the layer) or full when null. */
+  private baseRect: number[] | null = null;
+  /** drawCell calls left this frame (spreads beat-boundary work over a few frames). */
+  private budget = 0;
+  /** Growing cells: each is rendered once into a small sprite, then masked per frame on `scratch`. */
+  private sprPool: HTMLCanvasElement[] = [];
+  private scratch: HTMLCanvasElement | null = null;
+  private sprW = 1;
+  private sprH = 1;
   private drawnSig: Int32Array = new Int32Array(0);
   private cacheDirty = true;
   private cacheFull = true;
@@ -250,7 +281,7 @@ export class BoardRenderer {
     const sameLevel = !!this.sim && this.sim.L === sim.L;
     const dimsChanged = !this.sim || this.sim.w !== sim.w || this.sim.h !== sim.h;
     this.sim = sim;
-    this.grow.clear();
+    for (const i of Array.from(this.grow.keys())) this.endGrow(i);
     this.fx.length = 0;
     this.parts.length = 0;
     this.wrong = [];
@@ -261,7 +292,13 @@ export class BoardRenderer {
     this.metShown = new Uint8Array(n);
     for (const t of sim.L.targets) if (sim.ink[t] === sim.L.goal[t]) this.metShown[t] = 1;
     this.simSig = -1;
-    if (this.cssW > 0 && (dimsChanged || !sameLevel)) this.computeLayout();
+    if (sameLevel && this.stat && this.lay.cell > 0) {
+      // Restart / rewind: static layers stay valid, only the ink starts over.
+      this.inkFin = null;
+      this.drawnSig = new Int32Array(n).fill(-1);
+      this.cacheDirty = true;
+      this.cacheFull = true;
+    } else if (this.cssW > 0 && (dimsChanged || !sameLevel)) this.computeLayout(true);
     else this.rebuildAll();
     this.needsDraw = true;
   }
@@ -270,10 +307,9 @@ export class BoardRenderer {
     if (!this.sim || this.sim.L !== sim.L) { this.setSim(sim); return; }
     this.sim = sim;
     for (const [i, g] of this.grow) {
-      if (!sim.ink[i] || sim.born[i] !== sim.tick) this.grow.delete(i);
-      else void g;
+      if (!sim.ink[i] || sim.born[i] !== sim.tick) this.endGrow(i);
+      else g.spr = this.recycle(g.spr);
     }
-    this.wrong = this.wrong.filter((i) => sim.ink[i] !== 0);
     for (const t of sim.L.targets) this.metShown[t] = sim.ink[t] === sim.L.goal[t] ? this.metShown[t] : 0;
     this.cacheDirty = true;
     this.cacheFull = true;
@@ -285,11 +321,14 @@ export class BoardRenderer {
     this.cssW = Math.max(1, cssW);
     this.cssH = Math.max(1, cssH);
     this.dpr = Math.max(1, Math.min(MAX_DPR, dpr || 1));
-    this.canvas.width = Math.round(this.cssW * this.dpr);
-    this.canvas.height = Math.round(this.cssH * this.dpr);
+    const bw = Math.round(this.cssW * this.dpr), bh = Math.round(this.cssH * this.dpr);
+    if (this.canvas.width !== bw || this.canvas.height !== bh) {
+      this.canvas.width = bw;
+      this.canvas.height = bh;
+    }
     this.canvas.style.width = this.cssW + 'px';
     this.canvas.style.height = this.cssH + 'px';
-    this.computeLayout();
+    this.computeLayout(false);
     this.needsDraw = true;
     return { ...this.lay };
   }
@@ -322,6 +361,7 @@ export class BoardRenderer {
     if (!this.sim) return;
     const now = performance.now();
     const rm = this.opts.reducedMotion;
+    this.endGrow(idx);
     this.grow.set(idx, { t0: now, dur: rm ? 220 : 380, mode: 1, sides: 0 });
     const c = this.cellCenter(idx);
     this.addFx(FX_SPLASH, now, rm ? 320 : 560, idx, color, 0, c.x, c.y, 0);
@@ -348,8 +388,11 @@ export class BoardRenderer {
       if (dt > 60 && dt < 2500) this.beatMs = this.beatMs * 0.6 + dt * 0.4;
     }
     this.lastStepAt = now;
-    // Finish growths from the previous beat at once.
-    if (this.grow.size) { this.grow.clear(); this.cacheDirty = true; }
+    // Finish growths from earlier beats at once (drop blooms may run on).
+    for (const [i, g] of this.grow) {
+      if (g.mode !== 1 && sim.born[i] !== sim.tick) { this.endGrow(i); this.cacheDirty = true; }
+      else g.spr = this.recycle(g.spr); // neighbours changed: re-render its sprite
+    }
     const rm = this.opts.reducedMotion;
     const gd = Math.max(140, Math.min(480, this.beatMs * 0.55)) * (rm ? 0.6 : 1);
     const w = sim.w, s = this.lay.cell;
@@ -479,8 +522,20 @@ export class BoardRenderer {
       this.needsDraw = true;
     }
     // Growth bookkeeping.
+    this.budget = 6;
     for (const [i, g] of this.grow) {
-      if (now - g.t0 >= g.dur || !sim.ink[i]) { this.grow.delete(i); this.cacheDirty = true; }
+      if (now - g.t0 >= g.dur || !sim.ink[i]) {
+        if (sim.ink[i] && g.spr && this.inkC && !this.cacheFull && g.sig === this.cellSig(i) && this.drawnSig[i] !== g.sig) {
+          // The sprite already holds the finished cell: copy it instead of re-rendering.
+          const r = this.cellRect(i);
+          const ig = this.layerCtx(this.inkC);
+          ig.drawImage(g.spr, r.x - SPR_M, r.y - SPR_M, g.spr.width / this.dpr, g.spr.height / this.dpr);
+          this.drawnSig[i] = g.sig;
+          this.markBase(i);
+        }
+        this.endGrow(i);
+        this.cacheDirty = true;
+      }
     }
     if (this.cacheDirty) this.updateInkCache();
     // Targets that became met (mark appears once the ink has settled).
@@ -502,7 +557,7 @@ export class BoardRenderer {
     const win = this.win;
     const winAnim = !!win && !win.done;
     const hasSeeds = this.hasDormantSeeds();
-    const previewLive = !win && (this.tendrils.length > 0 || this.wakeHints.length > 0 || this.mixHints.length > 0);
+    const previewLive = !win && !this.wrong.length && (this.tendrils.length > 0 || this.wakeHints.length > 0 || this.mixHints.length > 0);
     const ghostLive = !win && !!this.ghosts && this.ghosts.some((g) => g.state === 'now');
     const animating = this.grow.size > 0 || this.fx.length > 0 || this.parts.length > 0 || winAnim
       || (!rm && (hasSeeds || ghostLive || (previewLive && !this.running)));
@@ -516,8 +571,9 @@ export class BoardRenderer {
   dispose(): void {
     this.disposed = true;
     this.cancelWin();
-    for (const c of [this.stat, this.statFin, this.inkC, this.inkFin, this.dyn, this.paperMask]) if (c) { c.width = 0; c.height = 0; }
-    this.stat = this.statFin = this.inkC = this.inkFin = this.dyn = this.paperMask = null;
+    for (const c of [this.stat, this.statFin, this.inkC, this.inkFin, this.base, this.scratch, this.paperMask, this.paperLayer, ...this.sprPool]) if (c) { c.width = 0; c.height = 0; }
+    this.stat = this.statFin = this.inkC = this.inkFin = this.base = this.scratch = this.paperMask = this.paperLayer = null;
+    this.sprPool = [];
     this.fx.length = 0;
     this.parts.length = 0;
     this.grow.clear();
@@ -536,7 +592,7 @@ export class BoardRenderer {
 
   private applySkin(): void {
     this.paper = paperSkin(this.opts.paper);
-    this.inkAlpha = this.paper.dark ? 0.95 : 0.9;
+    this.inkAlpha = this.paper.dark ? 0.95 : 0.93;
     this.buildPalette();
   }
 
@@ -548,16 +604,19 @@ export class BoardRenderer {
       const body = cols[c] || cols[7];
       const lum = luminance(body);
       const deep = shade(body, 0.55, 1.05);
-      const edge = p.dark ? shade(body, 1, 1.05, 0.12) : c === 7 ? shade(body, 0.82) : shade(body, 0.74, 1.12);
-      const mid = p.dark ? shade(body, 1, 1, 0.05) : shade(body, 0.9, 1.06);
+      const edge = p.dark ? shade(body, 1, 1.05, 0.14) : c === 7 ? shade(body, 0.84) : shade(body, 0.78, 1.12);
+      const mid = p.dark ? shade(body, 1, 1, 0.06) : c === 7 ? shade(body, 0.92) : shade(body, 0.9, 1.06);
+      const mid2 = p.dark ? shade(body, 1, 1, 0.035) : c === 7 ? shade(body, 0.95) : shade(body, 0.94, 1.04);
       const light = mix(body, '#ffffff', p.dark ? 0.35 : 0.3);
       const ring = p.dark ? shade(body, 1, 1, 0.08) : lum > 0.35 ? shade(body, 0.78, 1.15) : body;
       const glyph = lum < 0.2 ? mix(body, '#ffffff', 0.62) : mix(body, '#1a1410', 0.55);
       this.pal[c] = {
-        body, mid, edge, light, deep, glyph, ring,
-        halo: mix(p.base, body, p.dark ? 0.4 : 0.32),
+        body, mid, mid2, edge, light, deep, glyph, ring,
+        halo: mix(p.base, body, p.dark ? 0.3 : 0.16),
+        wet: mix(p.base, body, p.dark ? 0.7 : 0.62),
         wash: rgba(body, p.dark ? 0.2 : 0.15),
         pat: body,
+        washPat: null,
         glow: this.makeGlow(light),
       };
     }
@@ -575,7 +634,9 @@ export class BoardRenderer {
     return c;
   }
 
-  private computeLayout(): void {
+  private builtKey = '';
+
+  private computeLayout(force: boolean): void {
     const sim = this.sim;
     if (!sim || this.cssW <= 0) return;
     const W = sim.w, H = sim.h;
@@ -598,12 +659,15 @@ export class BoardRenderer {
     this.ox = Math.round(this.rx * d); this.oy = Math.round(this.ry * d);
     this.RW = Math.ceil(this.rw * d); this.RH = Math.ceil(this.rh * d);
     const s = cell;
-    this.gap = Math.max(1.1, s * 0.036);
-    this.e1 = Math.max(1, s * 0.03);
-    this.e2 = this.e1 + Math.max(1.2, s * 0.05);
-    this.rc = s * 0.27;
-    this.amp = Math.min(this.gap * 0.8, s * 0.028);
-    this.haloW = this.gap * 0.8;
+    this.gap = Math.max(1.1, s * 0.034);
+    this.e1 = Math.max(0.8, s * 0.02);
+    this.e2 = this.e1 * 3.4;
+    this.rc = s * 0.28;
+    this.amp = Math.min(this.gap * 0.7, s * 0.022);
+    this.haloW = this.gap * 0.6;
+    const key = [x, y, cell, d, this.RW, this.RH].join(',');
+    if (!force && key === this.builtKey && this.stat) return;
+    this.builtKey = key;
     this.rebuildAll();
   }
 
@@ -619,8 +683,19 @@ export class BoardRenderer {
     this.stat = this.buildStatic(this.stat, false);
     if (this.statFin) this.statFin = this.buildStatic(this.statFin, true);
     if (!this.inkC || this.inkC.width !== this.RW || this.inkC.height !== this.RH) this.inkC = makeCanvas(this.RW, this.RH);
-    if (!this.dyn || this.dyn.width !== this.RW || this.dyn.height !== this.RH) this.dyn = makeCanvas(this.RW, this.RH);
+    if (!this.base || this.base.width !== this.RW || this.base.height !== this.RH) this.base = makeCanvas(this.RW, this.RH);
+    this.baseDirty = true;
+    this.baseRect = null;
+    // Growth sprites: cell + margin.
+    const sw = Math.ceil((this.lay.cell + 2 * SPR_M) * this.dpr);
+    if (sw !== this.sprW) {
+      this.sprW = this.sprH = sw;
+      this.sprPool = [];
+      this.scratch = makeCanvas(sw, sw);
+    }
+    for (const g of this.grow.values()) g.spr = null;
     this.inkFin = null;
+    this.paperLayer = null;
     if (this.win) this.ensureFinLayers();
     this.drawnSig = new Int32Array(sim.w * sim.h).fill(-1);
     this.cacheDirty = true;
@@ -637,43 +712,51 @@ export class BoardRenderer {
 
   private buildSprites(): void {
     const d = this.dpr, s = this.lay.cell;
-    // Granulation tiles → body patterns.
-    const T = 128;
+    // Granulation tiles (opaque, 128 px) and wash tiles (translucent blooms, 317 px). Two
+    // co-prime periods so the texture never visibly repeats.
     const rnd = prng(911);
+    const fixPat = (pat: CanvasPattern | null) => {
+      if (pat && typeof (pat as CanvasPattern & { setTransform?: unknown }).setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
+        pat.setTransform(new DOMMatrix([1 / d, 0, 0, 1 / d, 0, 0]));
+      }
+      return pat;
+    };
     for (let c = 1; c <= 7; c++) {
       const P = this.pal[c];
+      const lum = luminance(P.body);
+      const T = 128;
       const t = makeCanvas(T, T), g = ctx2d(t);
       g.fillStyle = P.body;
       g.fillRect(0, 0, T, T);
-      // Soft wash variation (wrapped so the tile repeats seamlessly).
-      for (let k = 0; k < 7; k++) {
-        const bx = rnd() * T, by = rnd() * T, br = T * (0.18 + rnd() * 0.3);
-        const lighter = rnd() < 0.5;
-        const col = lighter ? (this.paper.dark ? P.light : mix(P.body, '#ffffff', 0.5)) : P.deep;
-        for (let ox = -T; ox <= T; ox += T) for (let oy = -T; oy <= T; oy += T) {
-          const gr = g.createRadialGradient(bx + ox, by + oy, 0, bx + ox, by + oy, br);
-          gr.addColorStop(0, rgba(col, lighter ? 0.13 : 0.07));
-          gr.addColorStop(1, rgba(col, 0));
-          g.fillStyle = gr;
-          g.fillRect(bx + ox - br, by + oy - br, br * 2, br * 2);
-        }
-      }
-      // Granulation specks.
-      const n = c === 7 ? 520 : 300;
+      const n = c === 7 ? 700 : 420;
       for (let k = 0; k < n; k++) {
-        const r = 0.35 + rnd() * (c === 7 ? 1.2 : 0.8);
-        g.fillStyle = rgba(rnd() < 0.8 ? P.deep : P.light, 0.05 + rnd() * (c === 7 ? 0.2 : 0.13));
+        const r = 0.35 + rnd() * (c === 7 ? 1.1 : 0.75);
+        g.fillStyle = rgba(rnd() < 0.8 ? (lum > 0.35 ? P.edge : P.deep) : P.light, 0.05 + rnd() * (c === 7 ? 0.2 : 0.14));
         g.beginPath();
         g.arc(rnd() * T, rnd() * T, r, 0, TAU);
         g.fill();
       }
-      const pat = this.ctx.createPattern(t, 'repeat');
-      if (pat) {
-        if (typeof (pat as CanvasPattern & { setTransform?: unknown }).setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
-          pat.setTransform(new DOMMatrix([1 / d, 0, 0, 1 / d, 0, 0]));
+      const pat = fixPat(this.ctx.createPattern(t, 'repeat'));
+      if (pat) P.pat = pat;
+      const T2 = 317;
+      const t2 = makeCanvas(T2, T2), g2 = ctx2d(t2);
+      for (let k = 0; k < 16; k++) {
+        const bx = rnd() * T2, by = rnd() * T2, br = T2 * (0.08 + rnd() * 0.2);
+        const lighter = rnd() < 0.55;
+        const col = lighter ? (this.paper.dark ? P.light : mix(P.body, '#ffffff', 0.55)) : (lum > 0.35 ? P.edge : P.deep);
+        const a = lighter ? 0.2 : lum > 0.35 ? 0.16 : 0.1;
+        for (let ox = -T2; ox <= T2; ox += T2) for (let oy = -T2; oy <= T2; oy += T2) {
+          const x = bx + ox, y = by + oy;
+          if (x + br < 0 || y + br < 0 || x - br > T2 || y - br > T2) continue;
+          const gr = g2.createRadialGradient(x, y, 0, x, y, br);
+          gr.addColorStop(0, rgba(col, a));
+          gr.addColorStop(0.6, rgba(col, a * 0.5));
+          gr.addColorStop(1, rgba(col, 0));
+          g2.fillStyle = gr;
+          g2.fillRect(x - br, y - br, br * 2, br * 2);
         }
-        P.pat = pat;
       }
+      P.washPat = fixPat(this.ctx.createPattern(t2, 'repeat'));
     }
     // Paper grain tile.
     const G = 96;
@@ -777,8 +860,8 @@ export class BoardRenderer {
     g.restore();
     const W = sim.w, n = sim.w * sim.h;
     const cx0 = this.lay.x, cy0 = this.lay.y;
-    const rnd = prng(1234 + W * 31 + sim.h * 7);
-    const isPaperCell = (i: number) => i >= 0 && !L.hole[i];
+    const seed = 1234 + W * 31 + sim.h * 7;
+    const rnd = prng(seed);
 
     // --- paper mask (board silhouette with a deckled edge)
     let mask = this.paperMask;
@@ -821,10 +904,11 @@ export class BoardRenderer {
     }
 
     // --- paper texture (clipped to the mask), with soft inner edge tone
-    const paperC = makeCanvas(this.RW, this.RH);
-    {
+    let paperC = this.paperLayer;
+    if (!fin || !paperC) {
+      paperC = makeCanvas(this.RW, this.RH);
       const pg = ctx2d(paperC);
-      this.paintPaperTexture(pg, this.RW, this.RH, rnd);
+      this.paintPaperTexture(pg, this.RW, this.RH, prng(seed + 1));
       // inner edge tone
       const inv = makeCanvas(this.RW, this.RH), ig = ctx2d(inv);
       ig.fillStyle = '#000';
@@ -833,24 +917,47 @@ export class BoardRenderer {
       ig.drawImage(mask, 0, 0);
       pg.save();
       pg.globalCompositeOperation = 'source-atop';
-      pg.shadowColor = P.dark ? 'rgba(0,0,0,0.55)' : rgba(shade(P.fiber, 0.75), 0.42);
-      pg.shadowBlur = pad * d * 1.4;
+      pg.shadowColor = P.dark ? 'rgba(0,0,0,0.28)' : rgba(shade(P.fiber, 0.75), 0.42);
+      pg.shadowBlur = pad * d * (P.dark ? 0.9 : 1.4);
       pg.shadowOffsetX = this.RW * 3;
       pg.drawImage(inv, -this.RW * 3, 0);
       pg.restore();
       pg.globalCompositeOperation = 'destination-in';
       pg.drawImage(mask, 0, 0);
       pg.globalCompositeOperation = 'source-over';
+      this.paperLayer = paperC;
     }
     // shadow + paper
     g.save();
     g.setTransform(1, 0, 0, 1, 0, 0);
-    g.shadowColor = P.dark ? 'rgba(0,0,0,0.6)' : 'rgba(70,45,20,0.28)';
+    g.shadowColor = P.dark ? 'rgba(0,0,0,0.45)' : 'rgba(70,45,20,0.28)';
     g.shadowBlur = Math.max(4, s * 0.16) * d;
     g.shadowOffsetY = Math.max(1.5, s * 0.05) * d;
     g.drawImage(paperC, 0, 0);
     g.restore();
 
+    if (P.dark) {
+      // Faint light rim so a dark board still reads against a dark screen.
+      const k = Math.max(1, Math.round(d * 1.2));
+      const ero = makeCanvas(this.RW, this.RH), eg = ctx2d(ero);
+      eg.drawImage(mask, 0, 0);
+      eg.globalCompositeOperation = 'destination-in';
+      eg.drawImage(mask, 0, k);
+      eg.drawImage(mask, 0, -k);
+      eg.drawImage(mask, k, 0);
+      eg.drawImage(mask, -k, 0);
+      const rim = makeCanvas(this.RW, this.RH), rg = ctx2d(rim);
+      rg.drawImage(mask, 0, 0);
+      rg.globalCompositeOperation = 'source-in';
+      rg.fillStyle = 'rgba(255,255,255,0.18)';
+      rg.fillRect(0, 0, this.RW, this.RH);
+      rg.globalCompositeOperation = 'destination-out';
+      rg.drawImage(ero, 0, 0);
+      g.save();
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.drawImage(rim, 0, 0);
+      g.restore();
+    }
     // --- frame line (mounted-painting border), union outline at pad/2
     {
       const fr = makeCanvas(this.RW, this.RH), fg = this.layerCtx(fr);
@@ -879,9 +986,9 @@ export class BoardRenderer {
     }
 
     // --- slow paper
-    this.drawSlow(g, rnd);
+    this.drawSlow(g, prng(seed + 2));
     // --- walls
-    this.drawWalls(g, rnd);
+    this.drawWalls(g, prng(seed + 3));
     // --- gates
     for (let i = 0; i < n; i++) if (L.gate[i]) this.drawGate(g, i);
     // --- seed stains
@@ -958,13 +1065,13 @@ export class BoardRenderer {
     g.lineCap = 'round';
     for (let k = 0; k < nf; k++) {
       const x = rnd() * W, y = rnd() * H;
-      const len = (5 + rnd() * rnd() * (id === 'paper-kraft' ? 14 : 30)) * d;
-      const a = rnd() * TAU, bend = (rnd() - 0.5) * len * 0.6;
+      const len = (6 + rnd() * rnd() * (id === 'paper-kraft' ? 14 : 44)) * d;
+      const a = rnd() * TAU, bend = (rnd() - 0.5) * len * 0.22;
       const x2 = x + Math.cos(a) * len, y2 = y + Math.sin(a) * len;
       const mx = (x + x2) / 2 - Math.sin(a) * bend, my = (y + y2) / 2 + Math.cos(a) * bend;
       const light = rnd() < (P.dark ? 0.15 : 0.3);
-      g.strokeStyle = light ? (P.dark ? rgba(P.fiber, 0.5) : 'rgba(255,255,255,0.55)') : rgba(P.fiber, (P.dark ? 0.35 : 0.22) + rnd() * 0.3);
-      g.lineWidth = (0.35 + rnd() * 0.75) * d;
+      g.strokeStyle = light ? (P.dark ? rgba(P.fiber, 0.45) : 'rgba(255,255,255,0.5)') : rgba(P.fiber, (P.dark ? 0.3 : 0.14) + rnd() * 0.22);
+      g.lineWidth = (0.3 + rnd() * 0.55) * d;
       g.beginPath();
       g.moveTo(x, y);
       g.quadraticCurveTo(mx, my, x2, y2);
@@ -1010,8 +1117,8 @@ export class BoardRenderer {
     const P = this.paper;
     const open = (i: number) => !L.wall[i];
     g.lineCap = 'round';
-    g.strokeStyle = rgba(P.grid, P.dark ? 0.16 : 0.13);
-    g.lineWidth = Math.max(0.6, s * 0.012);
+    g.strokeStyle = rgba(P.grid, P.dark ? 0.15 : 0.11);
+    g.lineWidth = Math.max(0.6, s * 0.011);
     g.beginPath();
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = y * W + x;
@@ -1088,9 +1195,9 @@ export class BoardRenderer {
       if (!L.slow[i]) continue;
       const r = this.cellRect(i);
       const gm = this.geomOf(i, (j) => !!L.slow[j]);
-      cellPath(path, r.x, r.y, s, gm & 15, gm >> 4, s * 0.03, s * 0.14, s * 0.012, i * 5 + 2);
+      cellPath(path, r.x, r.y, s, gm, s * 0.03, s * 0.14, s * 0.012);
     }
-    const base = P.dark ? shade(P.base, 1, 1, 0.07) : shade(P.base, 0.9, 1.25);
+    const base = P.dark ? shade(P.base, 1, 0.8, 0.07) : mix(shade(P.base, 0.9, 0.55), '#8d8577', 0.12);
     g.save();
     g.shadowColor = P.dark ? 'rgba(0,0,0,0.4)' : 'rgba(80,60,30,0.18)';
     g.shadowBlur = s * 0.06 * this.dpr;
@@ -1159,7 +1266,7 @@ export class BoardRenderer {
       any = true;
       const r = this.cellRect(i);
       const gm = this.geomOf(i, isWall);
-      cellPath(path, r.x, r.y, s, gm & 15, gm >> 4, gw, s * 0.2, s * 0.008, i * 3 + 7);
+      cellPath(path, r.x, r.y, s, gm, gw, s * 0.2, 0);
     }
     if (!any) return;
     g.save();
@@ -1270,7 +1377,7 @@ export class BoardRenderer {
     return x > 0 ? i - 1 : -1;
   }
 
-  /** Open-side bits (low 4) and concave-corner bits (<<4) for a cell given a "same region" test. */
+  /** Open-side bits (low 4), concave-corner bits (<<4) and same-diagonal bits (<<8) for a cell given a "same region" test. */
   private geomOf(i: number, same: (j: number) => boolean): number {
     const sim = this.sim!;
     const w = sim.w, h = sim.h, x = i % w, y = (i - x) / w;
@@ -1285,7 +1392,12 @@ export class BoardRenderer {
     if (t && r && !ok(x + 1, y - 1)) conc |= C_TR;
     if (b && r && !ok(x + 1, y + 1)) conc |= C_BR;
     if (b && l && !ok(x - 1, y + 1)) conc |= C_BL;
-    return open | (conc << 4);
+    let diag = 0;
+    if (ok(x - 1, y - 1)) diag |= C_TL;
+    if (ok(x + 1, y - 1)) diag |= C_TR;
+    if (ok(x + 1, y + 1)) diag |= C_BR;
+    if (ok(x - 1, y + 1)) diag |= C_BL;
+    return open | (conc << 4) | (diag << 8);
   }
 
   private inkGeom(i: number): number {
@@ -1302,29 +1414,33 @@ export class BoardRenderer {
     const w = sim.w, cx0 = i % w;
     const x = this.lay.x + cx0 * s, y = this.lay.y + ((i - cx0) / w) * s;
     const gm = this.inkGeom(i);
-    const open = gm & 15, conc = gm >> 4;
+    const open = gm & 15;
     const seed = i * 7 + 13;
-    const gap = fin ? this.gap * 0.35 : this.gap;
-    const amp = fin ? this.amp * 0.6 : this.amp;
-    const rc = this.rc;
-    if (open && !fin) {
-      g.fillStyle = P.halo;
-      g.beginPath();
-      cellPath(g, x, y, s, open, conc, gap - this.haloW, rc + this.haloW, amp, seed);
-      g.fill();
-    }
+    const gap = fin ? this.gap * 0.3 : this.gap;
+    const amp = fin ? this.amp * 0.7 : this.amp;
+    const rc = this.rc, k = this.e1;
+    // Soft edge darkening: nested layers stepping from the rim colour to the body.
     g.fillStyle = P.edge;
     g.beginPath();
-    cellPath(g, x, y, s, open, conc, gap, rc, amp, seed);
+    cellPath(g, x, y, s, gm, gap, rc, amp);
     g.fill();
-    g.fillStyle = P.mid;
-    g.beginPath();
-    cellPath(g, x, y, s, open, conc, gap + this.e1, rc - this.e1, amp, seed);
-    g.fill();
+    if (open) {
+      g.fillStyle = P.mid;
+      g.beginPath();
+      cellPath(g, x, y, s, gm, gap + k * 1.1, rc - k * 1.1, amp);
+      g.fill();
+    }
     g.fillStyle = P.pat;
     g.beginPath();
-    cellPath(g, x, y, s, open, conc, gap + this.e2, rc - this.e2, amp, seed);
+    cellPath(g, x, y, s, gm, gap + k * 2.6, rc - k * 2.6, amp);
     g.fill();
+    if (P.washPat) {
+      // Translucent blooms over freshly painted opaque layers: still idempotent on redraw.
+      g.fillStyle = P.washPat;
+      g.beginPath();
+      cellPath(g, x, y, s, gm, gap + k * 1.1, rc - k * 1.1, amp);
+      g.fill();
+    }
     const cx = x + s / 2, cy = y + s / 2;
     if (sim.mixed[i] && c !== 7) {
       // Watercolour bloom (backrun): pale scalloped centre with a darker rim.
@@ -1352,6 +1468,22 @@ export class BoardRenderer {
     }
   }
 
+  private cellSig(i: number): number {
+    const sim = this.sim!;
+    return sim.ink[i] | (sim.mixed[i] << 3) | (this.inkGeom(i) << 4);
+  }
+
+  /** Extend the base dirty rect by one cell (+ margin). */
+  private markBase(i: number): void {
+    if (this.baseDirty && !this.baseRect) return; // already a full update
+    const r = this.cellRect(i), d = this.dpr, m = SPR_M;
+    const x0 = Math.floor((r.x - m) * d) - this.ox, y0 = Math.floor((r.y - m) * d) - this.oy;
+    const x1 = Math.ceil((r.x + r.size + m) * d) - this.ox, y1 = Math.ceil((r.y + r.size + m) * d) - this.oy;
+    const b = this.baseRect;
+    if (!this.baseDirty) { this.baseRect = [x0, y0, x1, y1]; this.baseDirty = true; }
+    else if (b) { b[0] = Math.min(b[0], x0); b[1] = Math.min(b[1], y0); b[2] = Math.max(b[2], x1); b[3] = Math.max(b[3], y1); }
+  }
+
   private updateInkCache(): void {
     const sim = this.sim, cache = this.inkC;
     if (!sim || !cache) return;
@@ -1366,21 +1498,27 @@ export class BoardRenderer {
         if (ds >= 0 && (sim.ink[i] !== (ds & 7))) { this.cacheFull = true; break; }
       }
     }
-    if (this.cacheFull) {
+    const full = this.cacheFull;
+    if (full) {
       g.save();
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.clearRect(0, 0, cache.width, cache.height);
       g.restore();
       this.drawnSig.fill(-1);
       this.cacheFull = false;
+      this.baseDirty = true;
+      this.baseRect = null;
     }
     for (let i = 0; i < n; i++) {
       const c = sim.ink[i];
       if (!c || sim.L.hole[i] || this.grow.has(i)) continue;
-      const sig = c | (sim.mixed[i] << 3) | (this.inkGeom(i) << 4);
+      const sig = this.cellSig(i);
       if (sig !== this.drawnSig[i]) {
+        if (!full && this.budget <= 0) { this.cacheDirty = true; break; }
         this.drawCell(g, i);
         this.drawnSig[i] = sig;
+        this.budget--;
+        if (!full) this.markBase(i);
       }
     }
     this.needsDraw = true;
@@ -1424,7 +1562,7 @@ export class BoardRenderer {
   // ------------------------------------------------------------------ drawing
 
   private draw(now: number, previewLive: boolean): void {
-    const ctx = this.ctx, d = this.dpr, s = this.lay.cell;
+    const ctx = this.ctx, d = this.dpr;
     const win = this.win;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
@@ -1432,37 +1570,27 @@ export class BoardRenderer {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     const wk = win ? (win.done ? 1 : clamp01((now - win.t0) / win.dur)) : 0;
     const fade = win ? smooth(0.05, 0.55, wk) : 0;
-    // Static layer.
     if (win && this.statFin) {
+      // Finishing: grid and goal marks fade out, ink settles into the finished painting.
       ctx.drawImage(this.statFin, this.ox, this.oy);
-      if (fade < 1) { ctx.globalAlpha = 1 - fade; ctx.drawImage(this.stat!, this.ox, this.oy); ctx.globalAlpha = 1; }
-    } else ctx.drawImage(this.stat!, this.ox, this.oy);
-
-    // Ink.
+      if (fade < 1) { ctx.globalAlpha = 1 - fade; ctx.drawImage(this.stat!, this.ox, this.oy); }
+      ctx.globalAlpha = this.inkAlpha + (1 - this.inkAlpha) * fade;
+      ctx.drawImage(this.inkC!, this.ox, this.oy);
+      if (this.inkFin && fade > 0) {
+        ctx.globalAlpha = 0.96 * fade;
+        ctx.drawImage(this.inkFin, this.ox, this.oy);
+      }
+    } else {
+      if (this.baseDirty) this.updateBase();
+      ctx.drawImage(this.base!, this.ox, this.oy);
+    }
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    ctx.globalAlpha = this.inkAlpha;
     const showPreview = previewLive && !win;
-    const growing = this.grow.size > 0;
-    let inkLayer: HTMLCanvasElement = this.inkC!;
-    if (growing || showPreview) {
-      const dyn = this.dyn!;
-      const g = this.layerCtx(dyn);
-      g.save();
-      g.setTransform(1, 0, 0, 1, 0, 0);
-      g.clearRect(0, 0, dyn.width, dyn.height);
-      g.drawImage(this.inkC!, 0, 0);
-      g.restore();
-      if (showPreview) this.drawTendrils(g, now);
-      for (const [i, gr] of this.grow) this.drawGrowth(g, i, gr, clamp01((now - gr.t0) / gr.dur));
-      inkLayer = dyn;
-    }
-    ctx.globalAlpha = win ? this.inkAlpha + (1 - this.inkAlpha) * fade : this.inkAlpha;
-    ctx.drawImage(inkLayer, this.ox, this.oy);
-    if (win && this.inkFin && fade > 0) {
-      ctx.globalAlpha = 0.96 * fade;
-      ctx.drawImage(this.inkFin, this.ox, this.oy);
-    }
+    if (showPreview) this.drawTendrils(ctx, now);
+    for (const [i, gr] of this.grow) this.drawGrowth(ctx, i, gr, clamp01((now - gr.t0) / gr.dur));
     ctx.globalAlpha = 1;
 
-    ctx.setTransform(d, 0, 0, d, 0, 0);
     this.drawSeeds(ctx, now);
     if (showPreview && this.mixHints.length) this.drawMixHints(ctx, now);
     this.drawMetMarks(ctx, now, win ? 1 - fade : 1);
@@ -1473,9 +1601,34 @@ export class BoardRenderer {
     this.drawFx(ctx, now);
     if (win) this.drawWin(ctx, now, wk);
     this.drawParticles(ctx, now);
-    void s;
   }
 
+  private updateBase(): void {
+    const b = this.base!, g = ctx2d(b);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalAlpha = 1;
+    const r = this.baseRect;
+    if (r) {
+      const x = Math.max(0, r[0]), y = Math.max(0, r[1]);
+      const w = Math.min(b.width, r[2]) - x, h = Math.min(b.height, r[3]) - y;
+      if (w > 0 && h > 0) {
+        g.clearRect(x, y, w, h);
+        g.drawImage(this.stat!, x, y, w, h, x, y, w, h);
+        g.globalAlpha = this.inkAlpha;
+        g.drawImage(this.inkC!, x, y, w, h, x, y, w, h);
+      }
+    } else {
+      g.clearRect(0, 0, b.width, b.height);
+      g.drawImage(this.stat!, 0, 0);
+      g.globalAlpha = this.inkAlpha;
+      g.drawImage(this.inkC!, 0, 0);
+    }
+    g.globalAlpha = 1;
+    this.baseDirty = false;
+    this.baseRect = null;
+  }
+
+  /** Next-beat preview: small bulges of fresh ink pushing from each front into the cells it will claim. */
   private drawTendrils(g: CanvasRenderingContext2D, now: number): void {
     const s = this.lay.cell;
     let depth: number;
@@ -1487,65 +1640,144 @@ export class BoardRenderer {
       const P = this.pal[t.c];
       const r = this.cellRect(t.idx);
       const k = t.side;
-      // Entry edge midpoint and inward direction.
+      // Entry edge midpoint, inward direction and its perpendicular.
       const ex = r.x + s / 2 + DIRX[k] * s / 2, ey = r.y + s / 2 + DIRY[k] * s / 2;
-      const ix = -DIRX[k], iy = -DIRY[k];
+      const ix = -DIRX[k], iy = -DIRY[k], px = -iy, py = ix;
       const ang = Math.atan2(iy, ix);
       const cx = ex - ix * back, cy = ey - iy * back;
       const along = depth * s + back;
       const half = s * (0.17 + 0.35 * depth);
-      const layer = (fill: string | CanvasPattern, inset: number) => {
-        g.fillStyle = fill;
-        g.beginPath();
-        g.ellipse(cx, cy, Math.max(0.5, along - inset), Math.max(0.5, half - inset), ang, -HALF_PI, HALF_PI);
-        g.closePath();
-        g.fill();
-      };
-      layer(P.edge, 0);
-      layer(P.mid, this.e1);
-      layer(P.pat, this.e2 * 0.9);
+      // Darker rim, then paler wet ink inside it.
+      g.fillStyle = P.mid;
+      g.beginPath();
+      g.ellipse(cx, cy, along, half, ang, -HALF_PI, HALF_PI);
+      g.closePath();
+      g.fill();
+      g.fillStyle = P.wet;
+      g.beginPath();
+      g.ellipse(cx, cy, Math.max(0.5, along - this.e1 * 1.3), Math.max(0.5, half - this.e1 * 1.3), ang, -HALF_PI, HALF_PI);
+      g.closePath();
+      g.fill();
+      // Inside the source cell: body colour, so its rim opens where the ink pushes through.
+      const q = back / along;
+      const he = half * Math.sqrt(Math.max(0, 1 - q * q)) + 0.5;
+      g.fillStyle = P.pat;
+      g.beginPath();
+      g.moveTo(cx - px * half, cy - py * half);
+      g.lineTo(cx + px * half, cy + py * half);
+      g.lineTo(ex + px * he, ey + py * he);
+      g.lineTo(ex - px * he, ey - py * he);
+      g.closePath();
+      g.fill();
     }
   }
 
-  private drawGrowth(g: CanvasRenderingContext2D, i: number, gr: Grow, p: number): void {
-    const sim = this.sim!;
+  private recycle(c: HTMLCanvasElement | null | undefined): null {
+    if (c && c.width === this.sprW && this.sprPool.length < 32) this.sprPool.push(c);
+    return null;
+  }
+
+  private endGrow(i: number): void {
+    const g = this.grow.get(i);
+    if (!g) return;
+    this.recycle(g.spr);
+    this.grow.delete(i);
+  }
+
+  /** Growth shape (css coords) of a cell at eased progress e. */
+  private growthPath(g: CanvasRenderingContext2D, i: number, gr: Grow, e: number, arcsOnly: boolean): void {
     const s = this.lay.cell;
     const r = this.cellRect(i);
-    const P = this.pal[sim.ink[i]];
-    const e = easeOut(p);
-    g.save();
-    // Clip 1: cell bounds (+ overlap into joined neighbours).
-    g.beginPath();
-    g.rect(r.x - EXT - 1, r.y - EXT - 1, s + 2 * EXT + 2, s + 2 * EXT + 2);
-    g.clip();
-    // Clip 2: growth shape.
-    g.beginPath();
     const cx = r.x + s / 2, cy = r.y + s / 2;
+    g.beginPath();
     if (gr.mode === 0) {
       const along = s * (0.3 + 1.0 * e), half = s * (0.27 + 0.95 * e);
       for (let k = 0; k < 4; k++) {
         if (!(gr.sides & (1 << k))) continue;
         const ex = cx + DIRX[k] * s / 2, ey = cy + DIRY[k] * s / 2;
-        g.moveTo(ex, ey);
-        g.ellipse(ex, ey, along, half, Math.atan2(-DIRY[k], -DIRX[k]), -HALF_PI, HALF_PI);
-        g.closePath();
+        const a = Math.atan2(-DIRY[k], -DIRX[k]);
+        if (arcsOnly) g.moveTo(ex + Math.cos(a - HALF_PI) * half, ey + Math.sin(a - HALF_PI) * half);
+        else g.moveTo(ex, ey);
+        g.ellipse(ex, ey, along, half, a, -HALF_PI, HALF_PI);
+        if (!arcsOnly) g.closePath();
       }
     } else if (gr.mode === 1) {
       blobPath(g, cx, cy, s * (0.12 + 0.66 * e), i * 11 + 1, 0.1);
     } else {
       blobPath(g, cx, cy, s * (0.4 + 0.42 * e), i * 11 + 2, 0.05, 7, 0.12, 36);
     }
-    g.clip();
-    this.drawCell(g, i);
-    // Wet front: darker rim on the advancing edge, fading as the ink settles.
-    if (p < 1) {
-      g.globalAlpha = (1 - p) * 0.85;
-      g.strokeStyle = P.edge;
-      g.lineWidth = this.e1 * 2.2;
-      g.stroke();
-      g.globalAlpha = 1;
+  }
+
+  private drawGrowth(ctx: CanvasRenderingContext2D, i: number, gr: Grow, p: number): void {
+    const d = this.dpr, m = SPR_M;
+    const r = this.cellRect(i);
+    const sx = (r.x - m) * d, sy = (r.y - m) * d;
+    if (!gr.spr && this.budget <= 0) {
+      // Out of budget this frame: a plain wash of the growth shape stands in for one frame.
+      ctx.fillStyle = this.pal[this.sim!.ink[i]].pat;
+      ctx.save();
+      ctx.beginPath();
+      cellPath(ctx, r.x, r.y, r.size, this.inkGeom(i), this.gap, this.rc, this.amp);
+      ctx.clip();
+      this.growthPath(ctx, i, gr, easeOut(p), false);
+      ctx.fill();
+      ctx.restore();
+      return;
     }
-    g.restore();
+    if (!gr.spr) {
+      this.budget--;
+      gr.sig = this.cellSig(i);
+      const spr = this.sprPool.pop() || makeCanvas(this.sprW, this.sprH);
+      const sg = ctx2d(spr);
+      sg.setTransform(1, 0, 0, 1, 0, 0);
+      sg.clearRect(0, 0, spr.width, spr.height);
+      sg.setTransform(d, 0, 0, d, -sx, -sy);
+      this.drawCell(sg, i);
+      gr.spr = spr;
+    }
+    // Mask the finished-cell sprite by the growth shape (clip), then a fading wet rim on the front.
+    const e = easeOut(p);
+    if (gr.mode === 0) {
+      // While a source neighbour still shows its old open rim in the cache (budgeted redraw),
+      // bridge it so the ink stays connected.
+      const P = this.pal[this.sim!.ink[i]], s = r.size;
+      const half = Math.min(s / 2, s * (0.27 + 0.95 * e)), back = this.gap + this.e2 + 1;
+      for (let k = 0; k < 4; k++) {
+        if (!(gr.sides & (1 << k))) continue;
+        const n = this.nb(i, k);
+        if (n < 0 || this.grow.has(n) || this.drawnSig[n] === this.cellSig(n)) continue;
+        const ex = r.x + s / 2 + DIRX[k] * s / 2, ey = r.y + s / 2 + DIRY[k] * s / 2;
+        const px = -DIRY[k], py = DIRX[k];
+        ctx.fillStyle = P.pat;
+        ctx.beginPath();
+        ctx.moveTo(ex - px * half, ey - py * half);
+        ctx.lineTo(ex + px * half, ey + py * half);
+        ctx.lineTo(ex + px * half + DIRX[k] * back, ey + py * half + DIRY[k] * back);
+        ctx.lineTo(ex - px * half + DIRX[k] * back, ey - py * half + DIRY[k] * back);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(r.x - EXT, r.y - EXT, r.size + 2 * EXT, r.size + 2 * EXT);
+    ctx.clip();
+    this.growthPath(ctx, i, gr, e, false);
+    ctx.clip();
+    ctx.drawImage(gr.spr!, r.x - m, r.y - m, gr.spr!.width / d, gr.spr!.height / d);
+    if (p < 1 && gr.mode === 0) {
+      const a = ctx.globalAlpha;
+      ctx.globalAlpha = a * (1 - p) * (1 - p) * 0.6;
+      ctx.strokeStyle = this.pal[this.sim!.ink[i]].edge;
+      ctx.lineWidth = this.e1 * 2;
+      ctx.beginPath();
+      ctx.rect(r.x + this.gap + 1, r.y + this.gap + 1, r.size - 2 * this.gap - 2, r.size - 2 * this.gap - 2);
+      ctx.clip();
+      this.growthPath(ctx, i, gr, e, true);
+      ctx.stroke();
+      ctx.globalAlpha = a;
+    }
+    ctx.restore();
   }
 
   private hasDormantSeeds(): boolean {
@@ -1754,7 +1986,7 @@ export class BoardRenderer {
       ctx.font = '700 ' + Math.round(br * 1.15) + 'px Pretendard, system-ui, -apple-system, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(String(gh.order + 1), bx, by + br * 0.06);
+      ctx.fillText(String(gh.order), bx, by + br * 0.06);
       const wait = Math.min(5, gh.beat - sim.tick);
       if (gh.state === 'upcoming' && wait > 0) {
         ctx.fillStyle = P.ring;

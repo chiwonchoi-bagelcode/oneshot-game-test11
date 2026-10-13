@@ -7,8 +7,8 @@
  */
 import { WHITE, CODE_TO_CHAR, type LevelDef, type MechanicKey } from '../src/core/sim.ts';
 import {
-  FS, makeBoard, withGoal, play, randomTrial, greedyTrial, solve, analyzeSolution, usesOf, difficultyScore,
-  mulberry32, planToDrops, t0Space, LIMITS, type Board, type Plan, type Rng, type SolutionInfo, type Metrics,
+  FS, makeBoard, withGoal, play, randomTrial, greedyTrial, solve, analyzeSolution, usesOf, measure,
+  mulberry32, planToDrops, t0Space, floodT0, LIMITS, type Board, type Plan, type Rng, type SolutionInfo, type Metrics,
 } from './level-lib.ts';
 
 // ---------------------------------------------------------------------------------------------
@@ -129,8 +129,10 @@ export interface Spec {
   w: [number, number];
   h: [number, number];
   cells: [number, number];
-  /** Preferred silhouettes (names or prefixes); empty = any. */
+  /** Preferred silhouettes (names, or prefixes ending in '*'). */
   shapes?: string[];
+  /** Probability of using a preferred silhouette. */
+  shapeP?: number;
   /** Wall styles to draw from. */
   walls: string[];
   /** Only these primaries (e.g. ['Y','B']). */
@@ -234,13 +236,10 @@ function isSymX(g: string[][]): boolean {
 // Terrain
 // ---------------------------------------------------------------------------------------------
 
-function fittingMasks(spec: Spec): Mask[] {
-  const ms = MASKS.filter((m) => m.w >= spec.w[0] && m.w <= spec.w[1] && m.h >= spec.h[0] && m.h <= spec.h[1] && m.cells >= spec.cells[0] && m.cells <= spec.cells[1] + 12);
-  if (spec.shapes && spec.shapes.length) {
-    const pref = ms.filter((m) => spec.shapes!.some((s) => m.name.startsWith(s)));
-    if (pref.length) return pref;
-  }
-  return ms;
+function fittingMasks(spec: Spec): { all: Mask[]; pref: Mask[] } {
+  const all = MASKS.filter((m) => m.w >= spec.w[0] && m.w <= spec.w[1] && m.h >= spec.h[0] && m.h <= spec.h[1] && m.cells >= spec.cells[0] && m.cells <= spec.cells[1] + 12);
+  const pref = spec.shapes && spec.shapes.length ? all.filter((m) => spec.shapes!.some((s) => m.name === s || (s.endsWith('*') && m.name.startsWith(s.slice(0, -1))))) : [];
+  return { all, pref };
 }
 
 function setSym(g: string[][], x: number, y: number, ch: string, sym: boolean) {
@@ -456,16 +455,18 @@ function addSlow(rng: Rng, g: string[][], n: number): void {
   }
 }
 
-export function buildTerrain(rng: Rng, spec: Spec, cols: string[]): { rows: string[]; mask: string } | null {
-  const masks = fittingMasks(spec);
-  if (!masks.length) return null;
+export function buildTerrain(rng: Rng, spec: Spec, cols: string[], roomsWant = 0): { rows: string[]; mask: string } | null {
+  const fm = fittingMasks(spec);
+  if (!fm.all.length) return null;
   for (let tries = 0; tries < 40; tries++) {
-    const m = pick(rng, masks);
+    const m = fm.pref.length && rng() < (spec.shapeP ?? 0.6) ? pick(rng, fm.pref) : pick(rng, fm.all);
     let g = grid(m.rows);
     if (rng() < 0.5 && !isSymX(g)) g = g.map((r) => r.slice().reverse());
     if (spec.rooms) {
-      const want = ri(rng, spec.rooms[0], spec.rooms[1]);
+      const want = roomsWant || ri(rng, spec.rooms[0], spec.rooms[1]);
       if (!roomsTerrain(rng, g, want)) continue;
+      if (rng() < 0.5) applyWalls(rng, g, pick(rng, ['sym', 'pillars']));
+      if (components(g).length !== want) continue;
     } else {
       applyWalls(rng, g, pick(rng, spec.walls));
     }
@@ -729,6 +730,14 @@ function goalRows(B: Board, goal: Uint8Array): string[] {
 // ---------------------------------------------------------------------------------------------
 
 function finalOf(B0: Board, plan: Plan): Uint8Array | null {
+  if (!B0.slow.some((x) => x) && plan.every((p) => p.t === 0)) {
+    const out = new Uint8Array(B0.n);
+    const cells = plan.map((p) => p.i);
+    for (const i of cells) if (B0.wall[i] || B0.seed0[i] || B0.gate[i]) return null;
+    if (new Set(cells).size !== cells.length) return null;
+    floodT0(B0, cells, out);
+    return out;
+  }
   const r = play(B0, plan, false);
   if (!r.valid) return null;
   return r.sim.ink;
@@ -793,7 +802,7 @@ function randomT0Plan(rng: Rng, B0: Board): Plan {
 // Candidate
 // ---------------------------------------------------------------------------------------------
 
-export interface GenStats { attempts: number; terrain: number; plan: number; filter: number; cover: number; measure: number; ok: number }
+export interface GenStats { attempts: number; terrain: number; plan: number; filter: number; cover: number; measure: number; ok: number; preR?: number; preG?: number; t0?: number; t0e?: number; t0c?: number; t0x?: number; fin?: number }
 
 function terrainMatters(rows: string[], inks: string[], plan: Plan, final: Uint8Array, re: RegExp, to: string): boolean {
   const alt = rows.map((r) => r.replace(re, to));
@@ -816,7 +825,7 @@ export function makeCandidate(rng: Rng, spec: Spec, id: string, st: GenStats): C
   st.attempts++;
   const cols = spec.palette || ['R', 'Y', 'B'];
   const inks = chooseInks(rng, spec);
-  const ter = buildTerrain(rng, spec, cols);
+  const ter = buildTerrain(rng, spec, cols, spec.rooms ? inks.length : 0);
   if (!ter) {
     st.terrain++;
     return null;
@@ -906,6 +915,7 @@ export function makeCandidate(rng: Rng, spec: Spec, id: string, st: GenStats): C
     const f = finalOf(B0, pp);
     if (f) alts.push(f);
   }
+  const t0From = alts.length;
   if (spec.timing === 'need') {
     const space = t0Space(B0);
     if (space <= 4000) {
@@ -927,9 +937,42 @@ export function makeCandidate(rng: Rng, spec: Spec, id: string, st: GenStats): C
       };
       rec(0);
     } else {
-      for (let k = 0; k < 900; k++) {
+      for (let k = 0; k < 600; k++) {
         const f = finalOf(B0, randomT0Plan(rng, B0));
         if (f) alts.push(f);
+      }
+      // every t=0 play with each drop near its designed cell
+      const K = inks.length;
+      const R = K <= 2 ? 4 : K === 3 ? 2 : 1;
+      const near: number[][] = plan.map((p) => B0.open.filter((i) => Math.abs((i % B0.w) - (p.i % B0.w)) + Math.abs(Math.floor(i / B0.w) - Math.floor(p.i / B0.w)) <= R));
+      let total = 1;
+      for (const l of near) total *= l.length;
+      const keepP = Math.min(1, 9000 / total);
+      const cur: Plan = [];
+      const rec = (q: number) => {
+        if (q === K) {
+          if (keepP < 1 && rng() > keepP) return;
+          const f = finalOf(B0, cur);
+          if (f) alts.push(f);
+          return;
+        }
+        for (const i of near[q]) {
+          if (cur.some((p) => p.i === i)) continue;
+          cur.push({ i, t: 0 });
+          rec(q + 1);
+          cur.pop();
+        }
+      };
+      rec(0);
+    }
+  }
+  if (spec.timing === 'need') {
+    // a t=0 play that paints the very same picture makes waiting pointless: give up early
+    for (let j = t0From; j < alts.length; j++) {
+      if (sameAll(alts[j], info.final)) {
+        st.t0e = (st.t0e || 0) + 1;
+        st.measure++;
+        return null;
       }
     }
   }
@@ -950,63 +993,109 @@ export function makeCandidate(rng: Rng, spec: Spec, id: string, st: GenStats): C
     if (blanks.length) forced.push(pick(rng, blanks));
   }
   const ci: CoverInput = { B0, final: info.final, alts, plan, info, spec, allowWhite, forced };
-  let goal = cover(rng, ci);
+  let goal: Uint8Array | null = cover(rng, ci);
   if (!goal) {
     st.cover++;
     return null;
   }
-  // --- refine against the bots (their winning plays become alternatives) and t=0 solutions
-  let def: LevelDef = { id, map: rows, goal: goalRows(B0, goal), inks, solution: planToDrops(B0, plan) };
-  for (let round = 0; round < 4; round++) {
+  // --- refine against the bots (their winning plays become alternatives)
+  const refine = (rounds: number, nr: number, ng: number): boolean => {
+    for (let round = 0; round < rounds; round++) {
+      const Bg = withGoal(B0, goal!);
+      let added = 0;
+      for (let k = 0; k < nr; k++) {
+        const r = randomTrial(Bg, rng, buf);
+        if (!r.won) continue;
+        const f = finalOf(B0, r.plan);
+        if (f && !sameAll(f, info!.final)) {
+          alts.push(f);
+          added++;
+        }
+      }
+      for (let k = 0; k < ng; k++) {
+        const r = greedyTrial(Bg, rng, buf);
+        if (!r.won) continue;
+        const f = finalOf(B0, r.plan);
+        if (f && !sameAll(f, info!.final)) {
+          alts.push(f);
+          added++;
+        }
+      }
+      if (!added) return true;
+      const g2 = cover(rng, ci);
+      if (!g2) return false;
+      goal = g2;
+    }
+    return true;
+  };
+  if (!refine(3, 900, 300)) {
+    st.cover++;
+    return null;
+  }
+  // --- cheap pre-check with an independent stream before the expensive searches
+  {
     const Bg = withGoal(B0, goal);
-    let added = 0;
-    for (let k = 0; k < 1200; k++) {
-      const r = randomTrial(Bg, rng, buf);
-      if (r.won) {
-        const f = finalOf(B0, r.plan);
-        if (f && !sameOnGoal(f, info.final, goal)) {} // cannot happen (won)
-        if (f && !sameAll(f, info.final)) {
-          alts.push(f);
-          added++;
-        }
-      }
-    }
-    for (let k = 0; k < 300; k++) {
-      const r = greedyTrial(Bg, rng, buf);
-      if (r.won) {
-        const f = finalOf(B0, r.plan);
-        if (f && !sameAll(f, info.final)) {
-          alts.push(f);
-          added++;
-        }
-      }
-    }
-    if (spec.timing === 'need') {
-      const t0 = solve(Bg, { onlyT0: true, maxSolutions: 3, keep: 3, nodeBudget: 120000 });
-      for (const ex of t0.examples) {
-        const f = finalOf(B0, ex);
-        if (f) {
-          alts.push(f);
-          added++;
-        }
-      }
-      if (!t0.complete && !t0.examples.length && round === 3) {
-        st.cover++;
-        return null;
-      }
-    }
-    if (!added) break;
-    const g2 = cover(rng, ci);
-    if (!g2) {
-      st.cover++;
+    let w = 0;
+    for (let k = 0; k < 500; k++) if (randomTrial(Bg, rng, buf).won) w++;
+    if (w / 500 > spec.maxRandom * 1.3) {
+      st.measure++;
+      st.preR = (st.preR || 0) + 1;
       return null;
     }
-    goal = g2;
+    let gw = 0;
+    for (let k = 0; k < 150; k++) if (greedyTrial(Bg, rng, buf).won) gw++;
+    if (gw / 150 > Math.min(1, spec.maxGreedy * 1.3)) {
+      st.measure++;
+      st.preG = (st.preG || 0) + 1;
+      return null;
+    }
   }
-  def = { id, map: rows, goal: goalRows(B0, goal), inks, solution: planToDrops(B0, plan) };
-  // --- measure with fresh seeds
-  const m = measureCandidate(def, spec, info);
-  if (!m) {
+  // --- exact all-t=0 check (lazy: any t=0 solution found becomes an alternative, then re-cover)
+  let needsTiming: boolean | null = null;
+  if (spec.timing === 'need' || spec.timing === 'opt') {
+    const K = inks.length;
+    const budget = K <= 3 ? 600000 : 250000;
+    for (let round = 0; round < 8; round++) {
+      const Bg = withGoal(B0, goal);
+      const t0 = solve(Bg, { onlyT0: true, maxSolutions: 40, keep: 40, nodeBudget: budget });
+      if (!t0.examples.length) {
+        needsTiming = t0.complete ? true : null;
+        break;
+      }
+      needsTiming = false;
+      if (spec.timing !== 'need') break;
+      for (const ex of t0.examples) {
+        const f = finalOf(B0, ex);
+        if (f) alts.push(f);
+      }
+      const g2 = cover(rng, ci);
+      if (!g2) {
+        st.t0c = (st.t0c || 0) + 1;
+        break;
+      }
+      goal = g2;
+      if (!refine(1, 400, 150)) break;
+    }
+    if (spec.timing === 'need' && needsTiming === false) {
+      st.measure++;
+      st.t0 = (st.t0 || 0) + 1;
+      return null;
+    }
+    if (spec.timing === 'need' && needsTiming === null && K <= 3) {
+      st.measure++;
+      st.t0x = (st.t0x || 0) + 1;
+      return null;
+    }
+  } else needsTiming = false; // designed all-t=0 solution
+  const def: LevelDef = { id, map: rows, goal: goalRows(B0, goal), inks, solution: planToDrops(B0, plan) };
+  // --- final measurement (the same function the verifier runs)
+  const m = measure(def, { needsTimingHint: needsTiming });
+  if (m.random >= spec.maxRandom || m.greedy >= spec.maxGreedy) {
+    st.measure++;
+    st.fin = (st.fin || 0) + 1;
+    return null;
+  }
+  if (spec.timing === 'none' && info.timedDrops > 0) {
     st.measure++;
     return null;
   }
@@ -1023,55 +1112,6 @@ export function makeCandidate(rng: Rng, spec: Spec, id: string, st: GenStats): C
 function sameAll(a: Uint8Array, b: Uint8Array): boolean {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
-}
-function sameOnGoal(a: Uint8Array, b: Uint8Array, goal: Uint8Array): boolean {
-  for (let i = 0; i < a.length; i++) if (goal[i] && a[i] !== b[i]) return false;
-  return true;
-}
-
-export function measureCandidate(def: LevelDef, spec: Spec, info: SolutionInfo): Metrics | null {
-  const B = makeBoard(def);
-  const seed = hash32(def.id + '|' + def.goal.join('') + def.map.join(''));
-  const rng = mulberry32(seed);
-  let wins = 0;
-  const buf: number[] = [];
-  const RT = 2000;
-  for (let k = 0; k < RT; k++) {
-    if (randomTrial(B, rng, buf).won) wins++;
-    if (k === 400 && wins / 400 > spec.maxRandom * 2.5) return null; // early reject
-  }
-  const random = wins / RT;
-  if (random >= spec.maxRandom) return null;
-  let gw = 0;
-  for (let k = 0; k < 300; k++) if (greedyTrial(B, rng, buf).won) gw++;
-  const greedy = gw / 300;
-  if (greedy >= spec.maxGreedy) return null;
-  let solutions: number | null = null;
-  let complete = false;
-  let needsTiming: boolean | null = null;
-  const K = B.inkC.length;
-  const sr = solve(B, { nodeBudget: K <= 2 ? 400000 : 700000, maxSolutions: 4000 });
-  if (sr.complete) {
-    solutions = sr.solutions;
-    complete = true;
-    needsTiming = !sr.noWait;
-  } else if (sr.noWait) needsTiming = false;
-  if (needsTiming === null) {
-    const t0 = solve(B, { onlyT0: true, nodeBudget: 600000, maxSolutions: 1 });
-    if (t0.noWait) needsTiming = false;
-    else if (t0.complete) needsTiming = true;
-  }
-  if (spec.timing === 'need' && needsTiming === false) return null;
-  if (spec.timing === 'none' && info.timedDrops > 0) return null;
-  let cells = 0;
-  for (let i = 0; i < B.n; i++) if (!B.wall[i]) cells++;
-  const mech = usesOf(def, info).length;
-  const metrics: Metrics = {
-    random, greedy, solutions, complete, needsTiming, timedDrops: info.timedDrops, settleTick: info.settleTick,
-    targets: B.targets.length + B.whites.length, inks: K, cells, diff: 0,
-  };
-  metrics.diff = difficultyScore({ random, greedy, solutions, needsTiming, timedDrops: info.timedDrops, inks: K, cells, mechCount: mech });
-  return metrics;
 }
 
 export function hash32(s: string): number {

@@ -6,8 +6,9 @@
  */
 import * as D from './dsp.ts';
 
-type Gen = (sr: number, midi: number) => Float32Array;
-/** hi = context rate (bright), mid = 32 kHz (plucks), lo = 22.05 kHz (pads, bass, textures). */
+/** Renders one note. `raw` gives access to other (already rendered) instruments for derived sounds. */
+type Gen = (sr: number, midi: number, raw: (name: string, midi: number) => Float32Array) => D.Job | Float32Array;
+/** hi = context rate (bright), mid = 32 kHz (plucks/bells), lo = 22.05 kHz (pads, bass, textures). */
 type Quality = 'hi' | 'mid' | 'lo';
 
 interface InstDef {
@@ -15,23 +16,24 @@ interface InstDef {
   /** MIDI notes that get their own rendering; others are pitched from the nearest root. null = unpitched. */
   roots: number[] | null;
   q: Quality;
+  /** Seamless loop: the voice supplies the envelope. */
+  loop?: boolean;
 }
 
-const rev = (g: Gen, m: number): Gen => (sr) => D.reverse(g(sr, m));
-
 export const INSTRUMENTS: Record<string, InstDef> = {
-  kalimba: { gen: D.kalimba, roots: [55, 62, 69, 76, 83, 90], q: 'mid' },
-  marimba: { gen: D.marimba, roots: [43, 50, 57, 64, 71, 78, 85], q: 'mid' },
-  piano: { gen: D.piano, roots: [45, 52, 59, 66, 73, 80], q: 'mid' },
-  bell: { gen: D.bell, roots: [72, 79, 86, 93], q: 'hi' },
+  kalimba: { gen: D.kalimba, roots: [57, 64, 71, 78, 85], q: 'mid' },
+  marimba: { gen: D.marimba, roots: [43, 51, 59, 67, 75, 83], q: 'mid' },
+  piano: { gen: D.piano, roots: [48, 56, 64, 72, 80], q: 'mid' },
+  bell: { gen: D.bell, roots: [74, 81, 88], q: 'mid' },
   gong: { gen: D.gong, roots: [41], q: 'lo' },
-  gayageum: { gen: D.gayageum, roots: [50, 57, 64, 71, 78, 85], q: 'mid' },
-  flute: { gen: D.flute, roots: [64, 71, 78, 85], q: 'lo' },
-  pad: { gen: D.pad, roots: [50, 57, 64, 71], q: 'lo' },
-  sub: { gen: D.sub, roots: [33, 42], q: 'lo' },
-  plip: { gen: D.plip, roots: [74, 86], q: 'hi' },
+  gayageum: { gen: D.gayageum, roots: [52, 61, 70, 79], q: 'mid' },
+  flute: { gen: D.flute, roots: [66, 75, 84], q: 'lo' },
+  pad: { gen: D.pad, roots: [50, 58, 66], q: 'lo', loop: true },
+  sub: { gen: D.sub, roots: [33, 41], q: 'lo', loop: true },
+  plip: { gen: D.plip, roots: [74, 84, 94], q: 'hi' },
   coin: { gen: D.coin, roots: [93], q: 'hi' },
-  bellRev: { gen: rev(D.bell, 79), roots: [79], q: 'hi' },
+  // reversed chime: derived from the rendered bell (first second, reversed) — no extra synthesis
+  bellRev: { gen: (sr, _m, raw) => D.reverse(raw('bell', 81).slice(0, Math.floor(sr * 1.0))), roots: [81], q: 'mid' },
   woodHi: { gen: D.woodHi, roots: null, q: 'hi' },
   woodLo: { gen: D.woodLo, roots: null, q: 'mid' },
   tok: { gen: D.tok, roots: null, q: 'mid' },
@@ -41,7 +43,7 @@ export const INSTRUMENTS: Record<string, InstDef> = {
   paper: { gen: D.paper, roots: null, q: 'hi' },
   thud: { gen: D.thud, roots: null, q: 'lo' },
   swish: { gen: D.swish, roots: null, q: 'hi' },
-  swishDown: { gen: (sr) => D.reverse(D.swish(sr)), roots: null, q: 'hi' },
+  swishDown: { gen: (sr, _m, raw) => D.reverse(raw('swish', 0)), roots: null, q: 'hi' },
   swell: { gen: D.swell, roots: null, q: 'hi' },
   air: { gen: D.air, roots: null, q: 'lo' },
 };
@@ -51,6 +53,7 @@ export type InstName = keyof typeof INSTRUMENTS;
 export interface Sample {
   buf: AudioBuffer;
   rate: number;
+  loop: boolean;
 }
 
 export type BufferFactory = (data: Float32Array, sampleRate: number) => AudioBuffer;
@@ -58,6 +61,10 @@ export type BufferFactory = (data: Float32Array, sampleRate: number) => AudioBuf
 export class Bank {
   private bufs = new Map<string, AudioBuffer>();
   private queue: string[] = [];
+  /** Background job in progress (resumable generator). */
+  private job: { key: string; sr: number; it: D.Job } | null = null;
+  /** Longest single uninterrupted slice of synthesis work (ms) — jank indicator. */
+  maxSliceMs = 0;
   /** Total ms spent synthesising (for diagnostics / the harness). */
   renderMs = 0;
   renderedSamples = 0;
@@ -84,20 +91,45 @@ export class Bank {
     return best;
   }
 
-  private render(name: string, root: number): AudioBuffer {
-    const key = name + ':' + root;
-    let b = this.bufs.get(key);
-    if (b) return b;
-    const def = INSTRUMENTS[name];
-    const sr = this.rateOf(def.q);
-    const t0 = now();
-    const data = def.gen(sr, root);
-    this.renderMs += now() - t0;
+  private store(key: string, data: Float32Array, sr: number): AudioBuffer {
     this.renderedSamples += data.length;
-    b = this.make(data, sr);
+    const b = this.make(data, sr);
     this.bufs.set(key, b);
     return b;
   }
+
+  /** Synchronous render (a sound is needed right now). Finishes an in-flight job for the same note. */
+  private render(name: string, root: number): AudioBuffer {
+    const key = name + ':' + root;
+    const b = this.bufs.get(key);
+    if (b) return b;
+    const def = INSTRUMENTS[name];
+    const t0 = now();
+    let data: Float32Array;
+    let sr: number;
+    if (this.job && this.job.key === key) {
+      sr = this.job.sr;
+      const it = this.job.it;
+      this.job = null;
+      data = D.drain(it);
+    } else {
+      sr = this.rateOf(def.q);
+      data = D.drain(def.gen(sr, root, this.raw));
+    }
+    const dt = now() - t0;
+    this.renderMs += dt;
+    if (dt > this.maxSliceMs) this.maxSliceMs = dt;
+    const qi = this.queue.indexOf(key);
+    if (qi >= 0) this.queue.splice(qi, 1);
+    return this.store(key, data, sr);
+  }
+
+  private raw = (name: string, midi: number): Float32Array => {
+    const t0 = now();
+    const b = this.get(name, midi);
+    this.renderMs -= now() - t0; // counted by the nested render already
+    return b ? b.buf.getChannelData(0) : new Float32Array(1);
+  };
 
   /** Buffer + playbackRate for `midi` (ignored for unpitched instruments). */
   get(name: string, midi = 60): Sample | null {
@@ -105,7 +137,7 @@ export class Bank {
     if (!def) return null;
     const root = this.nearestRoot(def, midi);
     const buf = this.render(name, root);
-    return { buf, rate: def.roots ? Math.pow(2, (midi - root) / 12) : 1 };
+    return { buf, rate: def.roots ? Math.pow(2, (midi - root) / 12) : 1, loop: !!def.loop };
   }
 
   has(name: string, midi = 60): boolean {
@@ -126,19 +158,44 @@ export class Bank {
   }
 
   get pending(): number {
-    return this.queue.length;
+    return this.queue.length + (this.job ? 1 : 0);
   }
 
-  /** Render queued notes for up to `budgetMs`. Returns true when the queue is empty. */
+  /**
+   * Background rendering for about `budgetMs`: advances resumable jobs in small steps (each a few
+   * thousand samples or one partial), so a slice never blocks the main thread for long.
+   */
   step(budgetMs: number): boolean {
     const t0 = now();
-    while (this.queue.length) {
-      const k = this.queue.shift() as string;
-      const i = k.lastIndexOf(':');
-      this.render(k.slice(0, i), +k.slice(i + 1));
-      if (now() - t0 >= budgetMs) break;
+    let last = t0;
+    while (now() - t0 < budgetMs) {
+      if (!this.job) {
+        const k = this.queue.shift();
+        if (k == null) break;
+        if (this.bufs.has(k)) continue;
+        const i = k.lastIndexOf(':');
+        const name = k.slice(0, i);
+        const def = INSTRUMENTS[name];
+        const sr = this.rateOf(def.q);
+        const g = def.gen(sr, +k.slice(i + 1), this.raw);
+        if (g instanceof Float32Array) {
+          this.store(k, g, sr);
+          continue;
+        }
+        this.job = { key: k, sr, it: g };
+      }
+      const j = this.job;
+      const r = j.it.next();
+      if (r.done) {
+        this.job = null;
+        this.store(j.key, r.value, j.sr);
+      }
+      const n = now();
+      if (n - last > this.maxSliceMs) this.maxSliceMs = n - last;
+      last = n;
     }
-    return this.queue.length === 0;
+    this.renderMs += now() - t0;
+    return this.pending === 0;
   }
 
   get count(): number {

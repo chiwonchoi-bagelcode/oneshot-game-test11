@@ -11,6 +11,7 @@ import { MENU, chapterPalette, type Chord, type Palette } from './theory.ts';
 
 export interface StudioOptions {
   lowPower?: boolean;
+  deferReverb?: boolean;
   clock?: Clock;
   seed?: number;
 }
@@ -41,7 +42,7 @@ export class Studio {
   logNotes = false;
 
   constructor(ctx: BaseAudioContext, bank: Bank, opts: StudioOptions = {}) {
-    this.core = new Core(ctx, bank, { lowPower: opts.lowPower, clock: opts.clock });
+    this.core = new Core(ctx, bank, { lowPower: opts.lowPower, clock: opts.clock, deferReverb: opts.deferReverb });
     this.seed = opts.seed != null ? opts.seed : (Date.now() ^ 0x5bd1e995) >>> 0;
     this.sfx = new Sfx(this.core, { pal: () => this.pal(), chord: () => this.chord() }, this.seed + 17);
   }

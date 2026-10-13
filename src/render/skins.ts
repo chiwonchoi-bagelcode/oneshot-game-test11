@@ -31,8 +31,8 @@ export const PAPER_SKINS: PaperSkin[] = [
   { id: 'paper-kraft', base: '#e3d2b8', fiber: '#bf9f6c', grid: '#6f5534', wall: '#3b2f25', wallEdge: '#6d5945', dark: false },
   { id: 'paper-linen', base: '#f3f1eb', fiber: '#d3cec2', grid: '#6d6a62', wall: '#383b42', wallEdge: '#6a6e78', dark: false },
   { id: 'paper-dusk', base: '#efe3e4', fiber: '#d2bcc6', grid: '#7a5f70', wall: '#3a3046', wallEdge: '#6b5d7c', dark: false },
-  { id: 'paper-starlight', base: '#1e2643', fiber: '#33416b', grid: '#a9b6e0', wall: '#0b0f1e', wallEdge: '#4f5d8c', dark: true },
-  { id: 'paper-night', base: '#1d1d23', fiber: '#2f2f38', grid: '#b9b4aa', wall: '#08080b', wallEdge: '#4d4c58', dark: true },
+  { id: 'paper-starlight', base: '#1e2643', fiber: '#33416b', grid: '#a9b6e0', wall: '#46517c', wallEdge: '#8e9cd0', dark: true },
+  { id: 'paper-night', base: '#1d1d23', fiber: '#2f2f38', grid: '#b9b4aa', wall: '#4a4952', wallEdge: '#8d8b98', dark: true },
 ];
 
 const INK_BY_ID = new Map(INK_SKINS.map((s) => [s.id, s]));

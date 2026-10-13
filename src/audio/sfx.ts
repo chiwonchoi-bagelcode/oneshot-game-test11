@@ -24,6 +24,16 @@ const COLOR_DEG: Record<number, number> = { 1: 0, 2: 2, 4: 4, 3: 1, 5: 3, 6: 5 }
 const COLOR_SLOT: Record<number, [number, number]> = { 1: [0, 0], 2: [1, 0], 4: [2, 0], 3: [3, 0], 5: [0, 12], 6: [1, 12], 7: [2, -12] };
 const COLOR_PAN: Record<number, Pan> = { 1: -1, 2: 0, 4: 1, 3: -1, 5: 1, 6: 0, 7: 0 };
 
+/**
+ * Per-effect output trim in dB, calibrated with the offline harness (K-weighted momentary loudness)
+ * so everyday sounds sit in a ±2.5 dB band and the big moments step up deliberately.
+ */
+export const TRIM: Record<string, number> = {
+  uiTap: 3.0, uiBack: 1.8, popupOpen: 0.8, popupClose: 3.2, toggle: 4.1, drop: 4.8, reject: 3.5, rewind: 2.9, hint: 3.2,
+  targetMet: 7.4, wrong: 2.1, win: 2.4, stamp: 5.7, coins: 3.6, reward: 4.7, purchase: 4.3, chapterComplete: 7.8,
+  streak: 2.3, unlock: 5.2, beat: 6.9,
+};
+
 export interface SfxContext {
   pal(): Palette;
   chord(): Chord;
@@ -39,8 +49,13 @@ export class Sfx {
     this.r = rng(seed);
   }
 
+  private k = 1;
+  private trim(name: string): void {
+    this.k = Math.pow(10, (TRIM[name] || 0) / 20);
+  }
   private p(name: string, midi: number, t: number, o: PlayOpts = {}): void {
     o.bus = 'sfx';
+    o.gain = (o.gain == null ? 0.5 : o.gain) * this.k;
     this.core.play(name, midi, t, o);
   }
   /** ±3 cents of random detune. */
@@ -53,6 +68,7 @@ export class Sfx {
 
   // ---------------------------------------------------------------- UI
   uiTap(t: number): void {
+    this.trim('uiTap');
     const P = this.cx.pal();
     const d = [7, 9, 8, 7, 10][this.rr++ % 5];
     this.p('marimba', deg(P, d), t, { gain: this.vg(0.5), rate: this.det(), maxDur: 0.34 });
@@ -60,6 +76,7 @@ export class Sfx {
   }
 
   uiBack(t: number): void {
+    this.trim('uiBack');
     const P = this.cx.pal();
     this.p('marimba', deg(P, 7), t, { gain: this.vg(0.4), maxDur: 0.3 });
     this.p('marimba', deg(P, 5), t + 0.065, { gain: this.vg(0.38), maxDur: 0.34 });
@@ -67,6 +84,7 @@ export class Sfx {
   }
 
   popupOpen(t: number): void {
+    this.trim('popupOpen');
     const P = this.cx.pal();
     this.p('swish', 0, t, { gain: 0.32, rate: this.det() });
     this.p('kalimba', deg(P, 7), t + 0.07, { gain: this.vg(0.3), maxDur: 0.9, wet: 1, pan: -1 });
@@ -74,12 +92,14 @@ export class Sfx {
   }
 
   popupClose(t: number): void {
+    this.trim('popupClose');
     const P = this.cx.pal();
     this.p('swishDown', 0, t, { gain: 0.3, rate: this.det() });
     this.p('kalimba', deg(P, 6), t + 0.04, { gain: this.vg(0.28), maxDur: 0.7, wet: 1 });
   }
 
   toggle(on: boolean, t: number): void {
+    this.trim('toggle');
     const P = this.cx.pal();
     if (on) {
       this.p('tok', 0, t, { gain: 0.32, rate: 1.25 });
@@ -92,11 +112,12 @@ export class Sfx {
 
   // ---------------------------------------------------------------- board
   drop(c: InkColor, t: number): void {
+    this.trim('drop');
     const P = this.cx.pal();
     if (c === 7 || COLOR_DEG[c] == null) {
       // mud: low, muffled plop
-      this.p('marimba', deg(P, -3), t, { gain: 0.6, lp: 650, maxDur: 0.5 });
-      this.p('plip', deg(P, 0), t, { gain: 0.3, rate: 0.75, lp: 1400 });
+      this.p('marimba', deg(P, -3), t, { gain: 0.36, lp: 650, maxDur: 0.5 });
+      this.p('plip', deg(P, 0), t, { gain: 0.18, rate: 0.75, lp: 1400 });
       return;
     }
     let d = COLOR_DEG[c] + 5;
@@ -106,17 +127,19 @@ export class Sfx {
     this.lastDropT = t;
     const m = deg(P, d);
     const pan = COLOR_PAN[c] || 0;
-    this.p('plip', m + 12, t, { gain: this.vg(0.2), rate: this.det(), pan });
-    this.p('kalimba', m, t + 0.012, { gain: this.vg(0.36), rate: this.det(), maxDur: 1.3, pan, wet: 1 });
-    if (P.pluck !== 'kalimba') this.p(P.pluck, m - 12, t + 0.012, { gain: this.vg(0.14), maxDur: 0.9, pan });
+    this.p('plip', m + 7, t, { gain: this.vg(0.2), rate: this.det(), pan });
+    this.p('kalimba', m, t + 0.012, { gain: this.vg(0.36), rate: this.det(), maxDur: 1.3, pan });
+    if (P.pluck !== 'kalimba') this.p(P.pluck, m - 12, t + 0.012, { gain: this.vg(0.1), maxDur: 0.9, pan });
   }
 
   reject(t: number): void {
+    this.trim('reject');
     this.p('tok', 0, t, { gain: 0.4, rate: 0.72, lp: 1500 });
     this.p('tok', 0, t + 0.075, { gain: 0.26, rate: 0.64, lp: 1200 });
   }
 
   rewind(t: number): void {
+    this.trim('rewind');
     const P = this.cx.pal();
     const c = this.core;
     // reversed chimes swell into the "now", tape-ish downward bend at the end
@@ -129,6 +152,7 @@ export class Sfx {
   }
 
   hint(t: number): void {
+    this.trim('hint');
     const P = this.cx.pal();
     const ds = [7, 8, 9, 10, 12];
     ds.forEach((d, i) => this.p('bell', deg(P, d), t + i * 0.075, { gain: 0.15 + i * 0.02, wet: 1, pan: ((i % 3) - 1) as Pan, maxDur: 1.8 }));
@@ -138,6 +162,7 @@ export class Sfx {
   }
 
   targetMet(progress: number, t: number): void {
+    this.trim('targetMet');
     const P = this.cx.pal();
     const pr = Math.max(0, Math.min(1, progress || 0));
     const d = 7 + Math.round(pr * 7);
@@ -147,6 +172,7 @@ export class Sfx {
   }
 
   wrong(t: number): void {
+    this.trim('wrong');
     const P = this.cx.pal();
     const c = this.core;
     // gentle falling sigh: three soft felt-piano notes over a low tok and a fading pad
@@ -160,6 +186,8 @@ export class Sfx {
   }
 
   win(perfect: boolean, t: number): void {
+    this.trim('win');
+    if (perfect) this.k *= 1.2;
     const P = this.cx.pal();
     const c = this.core;
     const n = perfect ? 8 : 6;
@@ -184,6 +212,7 @@ export class Sfx {
   }
 
   stamp(t: number): void {
+    this.trim('stamp');
     this.p('thud', 0, t, { gain: 0.6 });
     this.p('woodLo', 0, t, { gain: 0.28, rate: 0.78 });
     this.p('paper', 0, t + 0.004, { gain: 0.34, rate: this.det() });
@@ -191,8 +220,10 @@ export class Sfx {
   }
 
   coins(count: number, t: number): void {
+    this.trim('coins');
     const P = this.cx.pal();
-    const n = Math.max(1, Math.min(14, Math.round(2 + Math.log2(Math.max(1, count)) * 2.2)));
+    const cnt = typeof count === 'number' && count > 0 && count < 1e12 ? count : 1;
+    const n = Math.max(1, Math.min(14, Math.round(2 + Math.log2(Math.max(1, cnt)) * 2.2)));
     const total = Math.min(1.2, 0.085 * n);
     const gap = n > 1 ? total / n : 0;
     for (let i = 0; i < n; i++) {
@@ -204,6 +235,7 @@ export class Sfx {
   }
 
   reward(t: number): void {
+    this.trim('reward');
     const P = this.cx.pal();
     const c = this.core;
     const hit = t + 0.5;
@@ -217,6 +249,7 @@ export class Sfx {
   }
 
   purchase(t: number): void {
+    this.trim('purchase');
     const P = this.cx.pal();
     this.p('coin', deg(P, 12), t, { gain: 0.2 });
     this.p('bell', deg(P, 9), t + 0.05, { gain: 0.26, wet: 1, maxDur: 1.2 });
@@ -226,6 +259,7 @@ export class Sfx {
   }
 
   chapterComplete(t: number): void {
+    this.trim('chapterComplete');
     const P = this.cx.pal();
     const c = this.core;
     this.p('gong', deg(P, -5), t, { gain: 0.3, wet: 1 });
@@ -237,10 +271,11 @@ export class Sfx {
     this.p('kalimba', deg(P, 5), sp, { gain: 0.26, wet: 1, maxDur: 1.4 });
     this.p('marimba', deg(P, 0), sp, { gain: 0.26, maxDur: 1.2 });
     this.p('coin', deg(P, 17), sp + 0.45, { gain: 0.08, wet: 1 });
-    c.duck(t, 0.3, 3.2);
+    c.duck(t, 0.25, 3.4);
   }
 
   streak(t: number): void {
+    this.trim('streak');
     const P = this.cx.pal();
     [5, 7, 9].forEach((d, i) => this.p('kalimba', deg(P, d), t + i * 0.08, { gain: 0.32, wet: 1, maxDur: 0.9, pan: ((i % 3) - 1) as Pan }));
     this.p('bell', deg(P, 10), t + 0.24, { gain: 0.24, wet: 1, maxDur: 1.4 });
@@ -249,6 +284,7 @@ export class Sfx {
   }
 
   unlock(t: number): void {
+    this.trim('unlock');
     const P = this.cx.pal();
     const pre = 0.45;
     this.p('bellRev', deg(P, 7), t, { gain: 0.2, tail: pre, wet: 1 });
@@ -261,6 +297,7 @@ export class Sfx {
 
   // ---------------------------------------------------------------- beat sonification
   beat(info: BeatInfo, t: number): void {
+    this.trim('beat');
     const P = this.cx.pal();
     const ch = this.cx.chord();
     const pr = Math.max(0, Math.min(1, info.progress || 0));

@@ -40,8 +40,10 @@ const RHY: number[][][] = [
 ];
 const WALK = [-2, -1, -1, -1, 0, 1, 1, 1, 2, -3, 3];
 
-const LEAD_GAIN: Record<string, number> = { piano: 0.24, kalimba: 0.2, flute: 0.15, bell: 0.11, gayageum: 0.26, marimba: 0.22 };
-const ARP_GAIN: Record<string, number> = { kalimba: 0.1, marimba: 0.12, gayageum: 0.13 };
+/** Music mix (linear gains on loudness-normalised instruments). Calibrated with the offline harness. */
+export const MIX = { pad: 0.106, bass: 0.079, lead: 0.126, arp: 0.139, amb: 1.26 };
+const LEAD_GAIN: Record<string, number> = { piano: 1, kalimba: 0.9, flute: 0.8, bell: 0.75, gayageum: 1, marimba: 0.95 };
+const ARP_GAIN: Record<string, number> = { kalimba: 0.9, marimba: 1, gayageum: 1 };
 
 export interface Grid {
   beatMs: number;
@@ -65,7 +67,8 @@ export class Director {
   private lastPhrase: Phrase | null = null;
   private leadIdx = 0;
   private arpIdx = 0;
-  private level: number;
+  private lv: { pad: number; bass: number; lead: number; arp: number; amb: number };
+  private rests = 0;
   private bars = 0;
   /** MIDI notes scheduled (for the harness / debug). */
   readonly log: number[] = [];
@@ -78,7 +81,8 @@ export class Director {
     this.r = rng(seed);
     this.nextT = t;
     this.stepDur = (pal.beatMs / 1000) / 2;
-    this.level = mood === 'menu' ? 1 : 0.72;
+    // the gameplay bed sits lower and thinner than the menu music (room for SFX)
+    this.lv = mood === 'menu' ? { pad: 1, bass: 1, lead: 1, arp: 1, amb: 1 } : { pad: 0.8, bass: 0.8, lead: 0.9, arp: 0.9, amb: 0.9 };
     this.chord = pal.prog[0];
   }
 
@@ -154,7 +158,10 @@ export class Director {
     }
     if (pos === 8 && p.bass8 && this.r() < 0.7) {
       const b = placePc(p, this.chord.b, 36);
-      this.core.play('sub', b, t, { gain: 0.12 * this.level, bus: 'music', group: this.gid + 'b', sustain: true, maxDur: this.stepDur * 7 });
+      this.core.play('sub', b, t, {
+        gain: MIX.bass * 0.6 * this.lv.bass, bus: 'music', group: this.gid + 'b', sustain: true,
+        attack: 0.2, hold: this.stepDur * 8 + 0.2, rel: 0.2,
+      });
     }
   }
 
@@ -168,20 +175,27 @@ export class Director {
     const ch = this.chord;
 
     // pad: 3 tones in close position around the centre, crossfading from the previous chord
-    c.release(this.gid + 'p', t, 0.35);
+    const chordDur = this.stepDur * 16;
+    c.release(this.gid + 'p', t + 0.3, 0.5);
     const tones = this.r() < 0.5 ? [ch.t[0], ch.t[1], ch.t[2]] : [ch.t[0], ch.t[1], ch.t[3] != null ? ch.t[3] : ch.t[2]];
     const centre = 62 + (this.bars % 3) - 1;
     const pans: Pan[] = [-1, 1, 0];
-    const pg = 0.075 * p.padGain * this.level;
+    const pg = MIX.pad * p.padGain * this.lv.pad;
     tones.forEach((pc, i) => {
       const m = nearPc(p, pc, centre);
-      c.play(p.pad, m, t, { gain: pg * (i === 2 ? 0.8 : 1), pan: pans[i], wet: 1, bus: 'music', group: this.gid + 'p', sustain: true });
+      c.play(p.pad, m, t, {
+        gain: pg * (i === 2 ? 0.8 : 1), pan: pans[i], wet: 1, bus: 'music', group: this.gid + 'p', sustain: true,
+        attack: 1.4, hold: chordDur * 1.2 + 0.3, rel: 0.5,
+      });
       this.rec(m);
     });
     // bass
-    c.release(this.gid + 'b', t, 0.3);
+    c.release(this.gid + 'b', t, 0.12);
     const b = placePc(p, ch.b, 36);
-    c.play('sub', b, t, { gain: 0.24 * this.level, bus: 'music', group: this.gid + 'b', sustain: true });
+    c.play('sub', b, t, {
+      gain: MIX.bass * this.lv.bass, bus: 'music', group: this.gid + 'b', sustain: true,
+      attack: 0.25, hold: p.bass8 ? this.stepDur * 8 - 0.05 : chordDur * 1.1, rel: 0.2,
+    });
     this.rec(b);
 
     // new phrase for these two bars
@@ -209,15 +223,18 @@ export class Director {
   private genPhrase(): Phrase | null {
     const p = this.pal;
     const r = this.r;
-    const rest = p.rest + (this.mood === 'play' ? 0.12 : 0);
+    const rest = p.rest + (this.mood === 'play' ? 0.05 : 0);
     if (this.chordIdx === 0 && this.bars <= 1) {
       // let the first chord breathe
       this.lastPhrase = null;
       return null;
     }
-    if (r() < rest) {
+    // rests give the music air, but never more than two phrases in a row
+    if (this.rests < 2 && r() < rest) {
+      this.rests++;
       return null;
     }
+    this.rests = 0;
     const prev = this.lastPhrase;
     const n5 = p.penta.length;
     // degree whose note is nearest the lead register centre
@@ -256,9 +273,9 @@ export class Director {
   private playLead(n: Note, t: number): void {
     const p = this.pal;
     const inst = (this.phrase as Phrase).inst;
-    const base = LEAD_GAIN[inst] || 0.2;
+    const base = MIX.lead * (LEAD_GAIN[inst] || 1);
     const accent = n.pos % 4 === 0 ? 1 : 0.85;
-    const g = base * this.level * accent * (0.9 + this.r() * 0.2);
+    const g = base * this.lv.lead * accent * (0.9 + this.r() * 0.2);
     const len = n.len * this.stepDur;
     const o: Parameters<Core['play']>[3] = {
       gain: g, pan: (this.phrase as Phrase).pan, wet: 1, bus: 'music', group: this.gid + 'l',
@@ -284,7 +301,7 @@ export class Director {
     const notes = pcs.map((pc) => placePc(p, pc, lo)).sort((a, b) => a - b);
     const i = this.arpIdx++ % (notes.length + 1);
     const m = i === notes.length ? notes[0] + 12 : notes[i];
-    const g = (ARP_GAIN[inst] || 0.11) * this.level * (0.85 + this.r() * 0.3);
+    const g = MIX.arp * (ARP_GAIN[inst] || 1) * this.lv.arp * (0.85 + this.r() * 0.3);
     this.core.play(inst, m, t + this.r() * 0.006, {
       gain: g, pan: this.arpIdx % 2 ? -1 : 1, wet: 1, bus: 'music', group: this.gid + 'a', maxDur: 1.3,
     });
@@ -297,7 +314,7 @@ export class Director {
     const r = this.r;
     const span = this.stepDur * 16;
     const at = t + r() * span * 0.7;
-    const L = this.level;
+    const L = this.lv.amb * MIX.amb;
     const grp = this.gid + 'x';
     const rp = (): Pan => ((Math.floor(r() * 3) - 1) as Pan);
     switch (p.amb) {
@@ -309,7 +326,7 @@ export class Director {
         break;
       }
       case 'clink': {
-        if (r() < 0.35) c.play('bell', deg(p, 10 + Math.floor(r() * 4)), at, { gain: 0.035 * L, pan: rp(), wet: 1, bus: 'music', group: grp, maxDur: 1.2, lp: 5000 });
+        if (r() < 0.35) c.play('bell', deg(p, 10 + Math.floor(r() * 4)), at, { gain: 0.03 * L, pan: rp(), wet: 1, bus: 'music', group: grp, maxDur: 1.2 });
         break;
       }
       case 'bamboo': {
@@ -324,18 +341,18 @@ export class Director {
         break;
       }
       case 'wind': {
-        if (r() < 0.45) c.play('air', 0, at, { gain: 0.11 * L, rate: 0.85 + r() * 0.3, pan: rp(), wet: 1, bus: 'music', group: grp });
+        if (r() < 0.45) c.play('air', 0, at, { gain: 0.035 * L, rate: 0.85 + r() * 0.3, pan: rp(), wet: 1, bus: 'music', group: grp });
         break;
       }
       case 'waves': {
-        if (r() < 0.55) c.play('air', 0, at, { gain: 0.16 * L, rate: 0.5 + r() * 0.12, lp: 900, pan: rp(), wet: 0, bus: 'music', group: grp });
+        if (r() < 0.55) c.play('air', 0, at, { gain: 0.07 * L, rate: 0.45 + r() * 0.1, pan: rp(), wet: 0, bus: 'music', group: grp });
         break;
       }
       case 'lantern': {
         if (r() < 0.4) {
           const d = 8 + Math.floor(r() * 4);
-          c.play('bell', deg(p, d), at, { gain: 0.03 * L, pan: rp(), wet: 1, bus: 'music', group: grp, maxDur: 1.6, lp: 4000 });
-          c.play('bell', deg(p, d + 2), at + 0.16, { gain: 0.022 * L, pan: rp(), wet: 1, bus: 'music', group: grp, maxDur: 1.6, lp: 4000 });
+          c.play('bell', deg(p, d), at, { gain: 0.026 * L, pan: rp(), wet: 1, bus: 'music', group: grp, maxDur: 1.6 });
+          c.play('bell', deg(p, d + 2), at + 0.16, { gain: 0.019 * L, pan: rp(), wet: 1, bus: 'music', group: grp, maxDur: 1.6 });
         }
         break;
       }
@@ -394,7 +411,10 @@ export class Tension {
     const acc = k % 4 === 0;
     const half = this.grid.beatMs / 2000;
     const jit = 0.92 + ((k * 7919) % 17) / 100;
-    c.play('woodLo', 0, t, { gain: (acc ? 0.17 : 0.115) * (0.75 + 0.25 * inten) * fadeIn * jit, rate: acc ? 1 : 0.94, bus: 'music', group: 'tension' });
+    // every 8th pulse swaps the woodblock for a hollow tok — keeps a long session from feeling mechanical
+    if (k % 8 === 7) c.play('tok', 0, t, { gain: 0.1 * (0.75 + 0.25 * inten) * fadeIn, rate: 1.2, bus: 'music', group: 'tension' });
+    else c.play('woodLo', 0, t, { gain: (acc ? 0.17 : 0.115) * (0.75 + 0.25 * inten) * fadeIn * jit, rate: acc ? 1 : 0.94, bus: 'music', group: 'tension' });
+    if (k % 16 === 15) c.play('brush', 0, t + half, { gain: 0.05 * fadeIn, rate: 1.1, pan: 1, bus: 'music', group: 'tension' });
     c.play(k % 2 ? 'shakerA' : 'shakerB', 0, t + half, { gain: (0.045 + 0.05 * inten) * fadeIn, pan: k % 2 ? -1 : 1, bus: 'music', group: 'tension' });
     if (inten > 0.72) c.play(k % 2 ? 'shakerB' : 'shakerA', 0, t + half * 1.5, { gain: 0.025 * fadeIn, pan: k % 2 ? 1 : -1, bus: 'music', group: 'tension' });
     if (p >= 0.5 && acc) c.play('thud', 0, t, { gain: (0.08 + 0.12 * p) * fadeIn, rate: 0.9, bus: 'music', group: 'tension' });

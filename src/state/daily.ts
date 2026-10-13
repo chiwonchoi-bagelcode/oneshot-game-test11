@@ -40,7 +40,7 @@ export interface Milestone {
 }
 
 /** Days of history to look back at when avoiding repeats. */
-const NO_REPEAT_DAYS = 21;
+const HISTORY_DAYS = 60;
 
 export function dailyUnlocked(): boolean {
   return clearedCount() >= DAILY.unlockAfterLevel;
@@ -62,30 +62,34 @@ function unknownCount(d: DailyDef, known: Set<MechanicKey>): number {
   return n;
 }
 
-function recentIds(day: string): Set<string> {
-  const out = new Set<string>();
-  for (let i = 1; i <= NO_REPEAT_DAYS; i++) {
+/** Pool id → days since it was last offered (only ids seen in the last HISTORY_DAYS). */
+function lastUsed(day: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (let i = HISTORY_DAYS; i >= 1; i--) {
     const rec = store.data.daily.days[addDays(day, -i)];
-    if (rec && rec.ids) for (const id of rec.ids) out.add(id);
+    if (rec && rec.ids) for (const id of rec.ids) out.set(id, i);
   }
   return out;
 }
 
-/** Chooses a pool puzzle for a tier: known rules only (fallback: fewest unknown), no recent repeats, stable per day. */
-function pickFromPool(day: string, tier: number, known: Set<MechanicKey>, avoid: Set<string>): DailyDef | null {
-  let cands = DAILY_POOL.filter((d) => d.tier === tierId(tier));
-  if (!cands.length) cands = DAILY_POOL.slice();
+/**
+ * Chooses a pool puzzle for a tier: known rules only (fallback: fewest unknown), the one offered
+ * longest ago (never offered first), ties broken by a stable per-day hash.
+ */
+function pickFromPool(day: string, tier: number, known: Set<MechanicKey>, used: Map<string, number>, taken: Set<string>): DailyDef | null {
+  let cands = DAILY_POOL.filter((d) => d.tier === tierId(tier) && !taken.has(d.id));
+  if (!cands.length) cands = DAILY_POOL.filter((d) => !taken.has(d.id));
   if (!cands.length) return null;
   let best = Infinity;
   for (const d of cands) best = Math.min(best, unknownCount(d, known));
   cands = cands.filter((d) => unknownCount(d, known) === best);
-  const fresh = cands.filter((d) => !avoid.has(d.id));
-  if (fresh.length) cands = fresh;
-  let pick = cands[0], score = Infinity;
+  let pick = cands[0], age = -1, score = Infinity;
   for (const d of cands) {
-    const s = rendezvous(day, tier, d.id);
-    if (s < score) {
-      score = s;
+    const a = used.get(d.id) ?? Infinity;
+    const sc = rendezvous(day, tier, d.id);
+    if (a > age || (a === age && sc < score)) {
+      age = a;
+      score = sc;
       pick = d;
     }
   }
@@ -124,14 +128,15 @@ function buildDefs(day: string): LevelDef[] {
   const rec = store.data.daily.days[day];
   const byId = new Map(DAILY_POOL.map((d) => [d.id, d]));
   const saved = rec && rec.ids && rec.ids.length === DAILY.tiers.length && rec.ids.every((id) => byId.has(id)) ? rec.ids : null;
-  const avoid = recentIds(day);
+  const used = lastUsed(day);
+  const taken = new Set<string>();
   const ids: string[] = [];
   const defs: LevelDef[] = [];
   for (let tier = 0; tier < DAILY.tiers.length; tier++) {
-    let base: LevelDef | null = saved ? byId.get(saved[tier])! : pickFromPool(day, tier, known, avoid);
+    let base: LevelDef | null = saved ? byId.get(saved[tier])! : pickFromPool(day, tier, known, used, taken);
     if (base) {
       ids.push(base.id);
-      avoid.add(base.id);
+      taken.add(base.id);
     } else base = pickFromCampaign(day, tier);
     if (!base) return [];
     defs.push(reskin(base, day, tier));
@@ -147,10 +152,16 @@ function buildDefs(day: string): LevelDef[] {
 /** Today's three puzzles (deterministic per day; cached). */
 export function todaySet(): DailyPuzzle[] {
   const day = today();
-  const rec = store.data.daily.days[day];
   // Once today's picks are saved they never change; before that they follow the known rules.
-  const key = day + (rec && rec.ids ? ':saved' : ':' + clearedUpTo());
-  if (!cache || cache.key !== key) cache = { key, defs: buildDefs(day) };
+  const keyOf = () => {
+    const r = store.data.daily.days[day];
+    return day + (r && r.ids ? ':saved' : ':' + clearedUpTo());
+  };
+  if (!cache || cache.key !== keyOf()) {
+    const defs = buildDefs(day);
+    cache = { key: keyOf(), defs };
+  }
+  const rec = store.data.daily.days[day];
   const done = (rec && rec.done) || [];
   return cache.defs.map((def, i) => ({
     tier: i as DailyTierIndex,

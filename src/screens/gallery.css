@@ -1,0 +1,430 @@
+/* ---------- Gallery ---------- */
+
+.gal-seg {
+  display: flex;
+  width: 100%;
+}
+
+.gal-seg button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 8px;
+  font-size: 15.5px;
+}
+
+.gal-sum {
+  margin: 12px 2px 10px;
+  font-size: 13.5px;
+  font-weight: 750;
+  color: var(--ink-2);
+}
+
+/* Paintings */
+.gal-paintings,
+.gal-cos-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.gal-paintings > .card + .card,
+.gal-cos-grid > .card + .card {
+  margin-top: 0;
+}
+
+.gal-ch {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  transition: transform 80ms ease;
+}
+
+.gal-ch:active {
+  transform: scale(0.98);
+}
+
+.gc-frame {
+  position: relative;
+  aspect-ratio: 3 / 2;
+  background: var(--paper);
+}
+
+.gc-art,
+.gc-art svg,
+.gp-art svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.gal-ch.locked .gc-art {
+  opacity: 0.55;
+}
+
+.gc-lock {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
+  border-radius: 50%;
+  background: rgba(43, 39, 51, 0.84);
+  color: #fff;
+  font-size: 22px;
+  --ic-hole: #3a3540;
+}
+
+.gal-ch.locked .gc-lock,
+.gp-art .gc-lock {
+  display: flex;
+}
+
+.gc-done {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--jade);
+  color: #fff;
+  font-size: 18px;
+  box-shadow: 0 0 0 2.5px var(--card);
+}
+
+.gal-ch.complete .gc-done {
+  display: flex;
+}
+
+.gc-meta {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 10px 12px 12px;
+}
+
+.gc-name {
+  font-size: 15px;
+  font-weight: 850;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 4px 0 7px;
+}
+
+.gc-num,
+.gc-seals {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.gc-seals {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.gc-seals .ic {
+  font-size: 17px;
+}
+
+.gc-meta .progress {
+  height: 8px;
+  margin-top: auto;
+}
+
+.gc-locktext {
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-2);
+  line-height: 1.3;
+}
+
+.gal-ch.locked .gc-row,
+.gal-ch.locked .progress,
+.gal-ch:not(.locked) .gc-locktext {
+  display: none;
+}
+
+/* Painting popup */
+.gp-art {
+  position: relative;
+  aspect-ratio: 3 / 2;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1.5px var(--line);
+}
+
+.gp-kicker {
+  display: flex;
+  margin: 14px 0 6px;
+}
+
+.gp-line {
+  margin: 0 0 14px;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.gp-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp-stat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gp-stat .progress {
+  flex: 1;
+}
+
+.gp-stat span,
+.gp-seals {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink-2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.gp-seals {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gp-seals .ic {
+  font-size: 22px;
+}
+
+.gp-epi {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--gold-soft);
+}
+
+.gp-epi b {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+  font-weight: 850;
+  color: var(--accent-dark);
+}
+
+.gp-epi p {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+/* Cosmetics */
+.gal-cos {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 10px;
+}
+
+.gal-cos.equipped {
+  box-shadow: var(--shadow-card), inset 0 0 0 2.5px var(--jade);
+}
+
+.gco-top {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: center;
+}
+
+.gal-slot {
+  border-radius: 12px;
+  background: var(--paper-2);
+}
+
+.gco-prev {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  background: var(--paper-2);
+  overflow: hidden;
+}
+
+.gco-fallback {
+  font-size: 64px;
+  color: var(--ink-3);
+}
+
+.gco-badge {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--jade);
+  color: #fff;
+  font-size: 16px;
+  box-shadow: 0 0 0 2.5px var(--card);
+}
+
+.gco-name {
+  display: block;
+  margin: 8px 2px;
+  font-size: 15px;
+  font-weight: 850;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gco-foot {
+  margin-top: auto;
+}
+
+.gco-also {
+  margin: -2px 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-2);
+  text-align: center;
+  line-height: 1.25;
+}
+
+.gco-inuse {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 48px;
+  border-radius: var(--r-s);
+  background: var(--jade-soft);
+  color: var(--jade-dark);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.gco-inuse .ic {
+  font-size: 18px;
+}
+
+.gco-src {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
+  padding: 6px 10px;
+  border-radius: var(--r-s);
+  background: var(--paper-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.gco-src .ic {
+  flex: none;
+  font-size: 16px;
+  --ic-hole: var(--paper-2);
+}
+
+.gco-src span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Buy / detail popups */
+.gal-buy,
+.gal-detail {
+  text-align: center;
+}
+
+.gb-prev,
+.gd-prev {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.gb-name {
+  display: block;
+  font-size: 19px;
+  font-weight: 850;
+}
+
+.gb-kind {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.gb-text {
+  margin: 12px 0 0;
+  font-size: 15.5px;
+  font-weight: 650;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.gd-note {
+  margin: 8px 0 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink-3);
+}
+
+.gd-src {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--paper-2);
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.35;
+  --ic-hole: var(--paper-2);
+}
+
+.gd-src .ic {
+  flex: none;
+  font-size: 18px;
+}
