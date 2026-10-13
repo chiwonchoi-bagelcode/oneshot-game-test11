@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#f4ecdf" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="format-detection" content="telephone=no" />
+    <title>Inkbloom · 물들임</title>
+    <link rel="icon" type="image/svg+xml" href="./icons/favicon.svg" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #241f2a; }
+      #boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #f4ecdf; z-index: 9999; transition: opacity .35s ease; }
+      #boot i { width: 44px; height: 44px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); background: #e0563b; animation: bootpulse 1.1s ease-in-out infinite; }
+      @keyframes bootpulse { 50% { transform: rotate(-45deg) scale(.8); opacity: .6; } }
+    </style>
+    <script type="module" crossorigin src="./assets/index-DBWpuEKo.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BnwefoUn.css">
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="boot"><i></i></div>
+  </body>
+</html>
