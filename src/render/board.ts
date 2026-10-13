@@ -1,14 +1,18 @@
 /*
  * Inkbloom board renderer (Canvas 2D).
  *
- * Layers (all offscreen canvases cover the board region only, at device resolution):
- *   stat     paper texture, frame, slow paper, walls, gates, grid, goal marks   (rebuilt on layout/level/skin)
- *   statFin  same without grid and goal marks (finished painting look, built lazily for the win)
- *   inkC     settled ink. Updated incrementally: a cell is (re)drawn only when its shape signature
- *            (colour + open sides + concave corners) changes. Everything in it is opaque, so redraws
- *            are idempotent; the layer is composited with the paper-dependent ink alpha.
- *   dyn      per-frame composition of inkC + growing cells + next-beat tendrils (only while needed)
- * Per frame: blit stat, blit ink (or dyn), then small overlays (seeds, marks, ghosts, effects).
+ * Layers (offscreen canvases covering the board region only, at device resolution, DPR <= 2):
+ *   ground   shadow, deckled hanji paper, frame line, slow paper, walls. Ink-independent, cached
+ *            module-wide per paper skin + board geometry + size (pixel-budgeted LRU).
+ *   stat     ground + gates, seed stains, grid, goal marks          (rebuilt on layout/level/skin)
+ *   statFin  same without grid and goal marks (finished-painting look, built lazily for the win)
+ *   inkC     settled ink, updated incrementally: a cell is (re)drawn only when its shape signature
+ *            (colour + open sides + concave corners) changes. All layers in it are opaque, so redraws
+ *            are idempotent. Work per frame is budgeted (a few cells), spreading beat boundaries.
+ *   base     stat + inkC pre-composited (dirty-rect updates): one full blit per frame.
+ * Per frame: blit base, next-beat tendrils, growing cells (each rendered once into a small sprite
+ * and revealed through a clip), then small overlays (seeds, marks, ghosts, effects, particles).
+ * Colour textures (granulation / wash tiles, glow sprites) are cached per colour across renderers.
  * render() returns false when nothing animates, so the caller can stop its rAF loop.
  */
 import { Sim, WHITE, type SimEvent } from '../core/sim.ts';
@@ -39,7 +43,7 @@ const C_TL = 1, C_TR = 2, C_BR = 4, C_BL = 8;
 const FX_SPLASH = 1, FX_BLOOM = 2, FX_BURST = 3, FX_SPARK = 4, FX_REJECT = 5, FX_POP = 6, FX_WRONG = 7;
 
 interface Pal {
-  body: string; mid: string; mid2: string; edge: string; halo: string; light: string; deep: string; wet: string;
+  body: string; mid: string; edge: string; light: string; deep: string; wet: string;
   glyph: string; ring: string; wash: string;
   pat: CanvasPattern | string;
   washPat: CanvasPattern | null;
@@ -109,7 +113,7 @@ function side(ctx: CanvasPath, x0: number, y0: number, x1: number, y1: number, a
  * Path of one cell of a region: open sides are inset by `inset` (and wobble), closed sides reach
  * EXT past the cell edge, convex corners are rounded, concave corners get a small notch.
  */
-export function cellPath(ctx: CanvasPath, x: number, y: number, s: number, gm: number, inset: number, rad: number, amp: number): void {
+function cellPath(ctx: CanvasPath, x: number, y: number, s: number, gm: number, inset: number, rad: number, amp: number): void {
   const open = gm & 15, concave = (gm >> 4) & 15, diag = (gm >> 8) & 15;
   // Line ids: one per grid line and side orientation, so a straight run shares its wobble.
   const gx = Math.round(x / s), gy = Math.round(y / s);
@@ -187,6 +191,113 @@ function starPath(ctx: CanvasPath, cx: number, cy: number, r: number): void {
 const DIRX = [0, 1, 0, -1];
 const DIRY = [-1, 0, 1, 0];
 
+// ---------------------------------------------------------------- shared caches
+// Colour textures and paper layers are shared by every renderer (gameplay board, thumbnails),
+// so re-skinning and repeated thumbnails do not regenerate them.
+
+interface ColorTex { tile: HTMLCanvasElement; wash: HTMLCanvasElement; glow: HTMLCanvasElement }
+const COLOR_TEX = new Map<string, ColorTex>();
+const COLOR_TEX_MAX = 40;
+function lruGet<V>(m: Map<string, V>, k: string): V | undefined {
+  const v = m.get(k);
+  if (v !== undefined) { m.delete(k); m.set(k, v); }
+  return v;
+}
+
+function hashStr(str: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+/** Pattern scaled so one tile pixel maps to one device pixel. */
+function devicePattern(ctx: CanvasRenderingContext2D, tile: HTMLCanvasElement, d: number): CanvasPattern | null {
+  const pat = ctx.createPattern(tile, 'repeat');
+  if (pat && typeof (pat as CanvasPattern & { setTransform?: unknown }).setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
+    pat.setTransform(new DOMMatrix([1 / d, 0, 0, 1 / d, 0, 0]));
+  }
+  return pat;
+}
+
+/** Granulation + wash tiles and glow sprite for one ink colour (cached, LRU). */
+function colorTex(P: { body: string; edge: string; deep: string; light: string }, dark: boolean, mud: boolean, d: number): ColorTex {
+  const key = P.body + '|' + (dark ? 1 : 0) + '|' + (mud ? 1 : 0) + '|' + d;
+  const hit = lruGet(COLOR_TEX, key);
+  if (hit) return hit;
+  const rnd = prng(911 + (hashStr(P.body) % 1000));
+  const lum = luminance(P.body);
+  // Granulation (opaque, 128 px) and translucent wash blooms (223 px): co-prime periods, so the
+  // texture never visibly repeats.
+  const T = 128;
+  const t = makeCanvas(T, T), g = ctx2d(t);
+  g.fillStyle = P.body;
+  g.fillRect(0, 0, T, T);
+  const n = mud ? 700 : 420;
+  for (let k = 0; k < n; k++) {
+    const r = 0.35 + rnd() * (mud ? 1.1 : 0.75);
+    g.fillStyle = rgba(rnd() < 0.8 ? (lum > 0.35 ? P.edge : P.deep) : P.light, 0.05 + rnd() * (mud ? 0.2 : 0.14));
+    g.beginPath();
+    g.arc(rnd() * T, rnd() * T, r, 0, TAU);
+    g.fill();
+  }
+  const T2 = 223;
+  const t2 = makeCanvas(T2, T2), g2 = ctx2d(t2);
+  for (let k = 0; k < 11; k++) {
+    const bx = rnd() * T2, by = rnd() * T2, br = T2 * (0.1 + rnd() * 0.22);
+    const lighter = rnd() < 0.55;
+    const col = lighter ? (dark ? P.light : mix(P.body, '#ffffff', 0.55)) : (lum > 0.35 ? P.edge : P.deep);
+    const a = lighter ? 0.2 : lum > 0.35 ? 0.16 : 0.1;
+    for (let ox = -T2; ox <= T2; ox += T2) for (let oy = -T2; oy <= T2; oy += T2) {
+      const x = bx + ox, y = by + oy;
+      if (x + br < 0 || y + br < 0 || x - br > T2 || y - br > T2) continue;
+      const gr = g2.createRadialGradient(x, y, 0, x, y, br);
+      gr.addColorStop(0, rgba(col, a));
+      gr.addColorStop(0.6, rgba(col, a * 0.5));
+      gr.addColorStop(1, rgba(col, 0));
+      g2.fillStyle = gr;
+      g2.fillRect(x - br, y - br, br * 2, br * 2);
+    }
+  }
+  const S = 64;
+  const gl = makeCanvas(S, S), gg = ctx2d(gl);
+  const grd = gg.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  grd.addColorStop(0, rgba(P.light, 0.95));
+  grd.addColorStop(0.45, rgba(P.light, 0.45));
+  grd.addColorStop(1, rgba(P.light, 0));
+  gg.fillStyle = grd;
+  gg.fillRect(0, 0, S, S);
+  const tex: ColorTex = { tile: t, wash: t2, glow: gl };
+  COLOR_TEX.set(key, tex);
+  while (COLOR_TEX.size > COLOR_TEX_MAX) COLOR_TEX.delete(COLOR_TEX.keys().next().value as string);
+  return tex;
+}
+
+/** Static ground layers keyed by paper skin, board geometry and size; pixel-budgeted LRU. */
+interface PaperLayers { ground: HTMLCanvasElement }
+const PAPER_CACHE = new Map<string, PaperLayers>();
+const PAPER_BUDGET_PX = 3_200_000;
+
+function paperCachePut(key: string, v: PaperLayers): void {
+  PAPER_CACHE.set(key, v);
+  let total = 0;
+  for (const e of PAPER_CACHE.values()) total += e.ground.width * e.ground.height;
+  while (total > PAPER_BUDGET_PX && PAPER_CACHE.size > 1) {
+    const k0 = PAPER_CACHE.keys().next().value as string;
+    const e = PAPER_CACHE.get(k0)!;
+    total -= e.ground.width * e.ground.height;
+    PAPER_CACHE.delete(k0);
+  }
+}
+
+const GRAIN_CACHE = new Map<string, HTMLCanvasElement>();
+const PAL_CACHE = new Map<string, Pal[]>();
+let BLANK: HTMLCanvasElement | null = null;
+function BLANK_GLOW(): HTMLCanvasElement {
+  if (!BLANK) BLANK = makeCanvas(1, 1);
+  return BLANK;
+}
+let SPARKLE: HTMLCanvasElement | null = null;
+
 export class BoardRenderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -196,14 +307,16 @@ export class BoardRenderer {
   private cssW = 0;
   private cssH = 0;
   private dpr = 1;
-  /** Used by renderThumbnail (no 72 px cap there). */
+  /** @internal Used by renderThumbnail (no 72 px cap there). */
   maxCell = MAX_CELL;
+  /** @internal Thumbnail mode: build only the finished-painting layers. */
+  thumb = false;
   private pad = 8;
   // Board region (css px) covered by the offscreen layers, and its device-pixel origin/size.
   private rx = 0; private ry = 0; private rw = 0; private rh = 0;
   private ox = 0; private oy = 0; private RW = 0; private RH = 0;
   // Ink geometry (css px).
-  private gap = 2; private e1 = 1.5; private e2 = 4; private rc = 14; private amp = 1.2; private haloW = 1.4;
+  private gap = 2; private e1 = 1.5; private e2 = 4; private rc = 14; private amp = 1.2;
 
   private paper: PaperSkin = paperSkin('paper-hanji');
   private pal: Pal[] = [];
@@ -211,8 +324,6 @@ export class BoardRenderer {
   private grain: HTMLCanvasElement | null = null;
   private sparkle: HTMLCanvasElement | null = null;
   private dropSprites: HTMLCanvasElement[] = [];
-  private paperMask: HTMLCanvasElement | null = null;
-  private paperLayer: HTMLCanvasElement | null = null;
   private boardClip: Path2D | null = null;
 
   private stat: HTMLCanvasElement | null = null;
@@ -226,9 +337,8 @@ export class BoardRenderer {
   private baseRect: number[] | null = null;
   /** drawCell calls left this frame (spreads beat-boundary work over a few frames). */
   private budget = 0;
-  /** Growing cells: each is rendered once into a small sprite, then masked per frame on `scratch`. */
+  /** Growing cells: each is rendered once into a small sprite, then revealed per frame through a clip. */
   private sprPool: HTMLCanvasElement[] = [];
-  private scratch: HTMLCanvasElement | null = null;
   private sprW = 1;
   private sprH = 1;
   private drawnSig: Int32Array = new Int32Array(0);
@@ -385,7 +495,8 @@ export class BoardRenderer {
     const now = performance.now();
     if (this.lastStepAt > 0) {
       const dt = now - this.lastStepAt;
-      if (dt > 60 && dt < 2500) this.beatMs = this.beatMs * 0.6 + dt * 0.4;
+      // Ignore grace re-steps (a second onStep right after a beat) and long pauses.
+      if (dt > 130 && dt < 2500) this.beatMs = this.beatMs * 0.6 + dt * 0.4;
     }
     this.lastStepAt = now;
     // Finish growths from earlier beats at once (drop blooms may run on).
@@ -571,8 +682,8 @@ export class BoardRenderer {
   dispose(): void {
     this.disposed = true;
     this.cancelWin();
-    for (const c of [this.stat, this.statFin, this.inkC, this.inkFin, this.base, this.scratch, this.paperMask, this.paperLayer, ...this.sprPool]) if (c) { c.width = 0; c.height = 0; }
-    this.stat = this.statFin = this.inkC = this.inkFin = this.base = this.scratch = this.paperMask = this.paperLayer = null;
+    for (const c of [this.stat, this.statFin, this.inkC, this.inkFin, this.base, ...this.sprPool]) if (c) { c.width = 0; c.height = 0; }
+    this.stat = this.statFin = this.inkC = this.inkFin = this.base = null;
     this.sprPool = [];
     this.fx.length = 0;
     this.parts.length = 0;
@@ -580,7 +691,23 @@ export class BoardRenderer {
     this.sim = null;
   }
 
-  /** Thumbnail helper: show the finished-painting end state without animation. */
+  /** @internal Thumbnail: draw the finished painting once (thumb mode). */
+  drawThumb(): void {
+    if (!this.sim || !this.statFin || !this.inkFin) return;
+    const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    ctx.drawImage(this.statFin, this.ox, this.oy);
+    ctx.globalAlpha = 0.97;
+    ctx.drawImage(this.inkFin, this.ox, this.oy);
+    ctx.globalAlpha = 1;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.win = { t0: 0, dur: 1, perfect: false, onDone: null, done: true, order: [], spawned: 0 };
+    this.drawSeeds(ctx, 0);
+    this.drawMetMarks(ctx, 0, 0);
+  }
+
+  /** @internal Show the finished-painting end state without animation. */
   finishInstant(): void {
     if (!this.sim) return;
     this.ensureFinLayers();
@@ -598,6 +725,13 @@ export class BoardRenderer {
 
   private buildPalette(): void {
     const p = this.paper;
+    const key = this.opts.ink + '|' + p.id;
+    const cachedPal = PAL_CACHE.get(key);
+    if (cachedPal) {
+      // Fresh objects (textures are attached per renderer), shared colour strings.
+      this.pal = cachedPal.map((q) => ({ ...q }));
+      return;
+    }
     const cols = inkForPaper(inkSkin(this.opts.ink), p);
     this.pal = [];
     for (let c = 0; c <= 7; c++) {
@@ -606,32 +740,35 @@ export class BoardRenderer {
       const deep = shade(body, 0.55, 1.05);
       const edge = p.dark ? shade(body, 1, 1.05, 0.14) : c === 7 ? shade(body, 0.84) : shade(body, 0.78, 1.12);
       const mid = p.dark ? shade(body, 1, 1, 0.06) : c === 7 ? shade(body, 0.92) : shade(body, 0.9, 1.06);
-      const mid2 = p.dark ? shade(body, 1, 1, 0.035) : c === 7 ? shade(body, 0.95) : shade(body, 0.94, 1.04);
       const light = mix(body, '#ffffff', p.dark ? 0.35 : 0.3);
       const ring = p.dark ? shade(body, 1, 1, 0.08) : lum > 0.35 ? shade(body, 0.78, 1.15) : body;
       const glyph = lum < 0.2 ? mix(body, '#ffffff', 0.62) : mix(body, '#1a1410', 0.55);
       this.pal[c] = {
-        body, mid, mid2, edge, light, deep, glyph, ring,
-        halo: mix(p.base, body, p.dark ? 0.3 : 0.16),
+        body, mid, edge, light, deep, glyph, ring,
         wet: mix(p.base, body, p.dark ? 0.7 : 0.62),
         wash: rgba(body, p.dark ? 0.2 : 0.15),
         pat: body,
         washPat: null,
-        glow: this.makeGlow(light),
+        glow: BLANK_GLOW(),
       };
     }
+    PAL_CACHE.set(key, this.pal.map((q) => ({ ...q })));
   }
 
-  private makeGlow(color: string): HTMLCanvasElement {
-    const S = 64;
-    const c = makeCanvas(S, S), g = ctx2d(c);
-    const gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-    gr.addColorStop(0, rgba(color, 0.95));
-    gr.addColorStop(0.45, rgba(color, 0.45));
-    gr.addColorStop(1, rgba(color, 0));
-    g.fillStyle = gr;
-    g.fillRect(0, 0, S, S);
-    return c;
+  /** Patterns and glow sprite from the shared colour cache (depends on dpr). */
+  private attachTex(c: number): void {
+    const P = this.pal[c];
+    if (this.thumb && this.lay.cell < 44) {
+      // Small thumbnails: texture is invisible at this scale, plain washes are enough.
+      P.pat = P.body;
+      P.washPat = null;
+      return;
+    }
+    const tex = colorTex(P, this.paper.dark, c === 7, this.dpr);
+    // Pattern objects are created per renderer context (tiles are shared).
+    P.pat = devicePattern(this.ctx, tex.tile, this.dpr) || P.body;
+    P.washPat = devicePattern(this.ctx, tex.wash, this.dpr);
+    P.glow = tex.glow;
   }
 
   private builtKey = '';
@@ -664,7 +801,6 @@ export class BoardRenderer {
     this.e2 = this.e1 * 3.4;
     this.rc = s * 0.28;
     this.amp = Math.min(this.gap * 0.7, s * 0.022);
-    this.haloW = this.gap * 0.6;
     const key = [x, y, cell, d, this.RW, this.RH].join(',');
     if (!force && key === this.builtKey && this.stat) return;
     this.builtKey = key;
@@ -679,6 +815,13 @@ export class BoardRenderer {
     const sim = this.sim;
     if (!sim || this.lay.cell <= 0) return;
     this.buildSprites();
+    if (this.thumb) {
+      // Thumbnails only need the finished look.
+      this.statFin = this.buildStatic(this.statFin, true);
+      this.inkFin = null;
+      this.ensureFinLayers();
+      return;
+    }
     this.buildBoardClip();
     this.stat = this.buildStatic(this.stat, false);
     if (this.statFin) this.statFin = this.buildStatic(this.statFin, true);
@@ -691,11 +834,9 @@ export class BoardRenderer {
     if (sw !== this.sprW) {
       this.sprW = this.sprH = sw;
       this.sprPool = [];
-      this.scratch = makeCanvas(sw, sw);
     }
     for (const g of this.grow.values()) g.spr = null;
     this.inkFin = null;
-    this.paperLayer = null;
     if (this.win) this.ensureFinLayers();
     this.drawnSig = new Int32Array(sim.w * sim.h).fill(-1);
     this.cacheDirty = true;
@@ -711,69 +852,26 @@ export class BoardRenderer {
   }
 
   private buildSprites(): void {
-    const d = this.dpr, s = this.lay.cell;
-    // Granulation tiles (opaque, 128 px) and wash tiles (translucent blooms, 317 px). Two
-    // co-prime periods so the texture never visibly repeats.
-    const rnd = prng(911);
-    const fixPat = (pat: CanvasPattern | null) => {
-      if (pat && typeof (pat as CanvasPattern & { setTransform?: unknown }).setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
-        pat.setTransform(new DOMMatrix([1 / d, 0, 0, 1 / d, 0, 0]));
-      }
-      return pat;
-    };
-    for (let c = 1; c <= 7; c++) {
-      const P = this.pal[c];
-      const lum = luminance(P.body);
-      const T = 128;
-      const t = makeCanvas(T, T), g = ctx2d(t);
-      g.fillStyle = P.body;
-      g.fillRect(0, 0, T, T);
-      const n = c === 7 ? 700 : 420;
-      for (let k = 0; k < n; k++) {
-        const r = 0.35 + rnd() * (c === 7 ? 1.1 : 0.75);
-        g.fillStyle = rgba(rnd() < 0.8 ? (lum > 0.35 ? P.edge : P.deep) : P.light, 0.05 + rnd() * (c === 7 ? 0.2 : 0.14));
-        g.beginPath();
-        g.arc(rnd() * T, rnd() * T, r, 0, TAU);
-        g.fill();
-      }
-      const pat = fixPat(this.ctx.createPattern(t, 'repeat'));
-      if (pat) P.pat = pat;
-      const T2 = 317;
-      const t2 = makeCanvas(T2, T2), g2 = ctx2d(t2);
-      for (let k = 0; k < 16; k++) {
-        const bx = rnd() * T2, by = rnd() * T2, br = T2 * (0.08 + rnd() * 0.2);
-        const lighter = rnd() < 0.55;
-        const col = lighter ? (this.paper.dark ? P.light : mix(P.body, '#ffffff', 0.55)) : (lum > 0.35 ? P.edge : P.deep);
-        const a = lighter ? 0.2 : lum > 0.35 ? 0.16 : 0.1;
-        for (let ox = -T2; ox <= T2; ox += T2) for (let oy = -T2; oy <= T2; oy += T2) {
-          const x = bx + ox, y = by + oy;
-          if (x + br < 0 || y + br < 0 || x - br > T2 || y - br > T2) continue;
-          const gr = g2.createRadialGradient(x, y, 0, x, y, br);
-          gr.addColorStop(0, rgba(col, a));
-          gr.addColorStop(0.6, rgba(col, a * 0.5));
-          gr.addColorStop(1, rgba(col, 0));
-          g2.fillStyle = gr;
-          g2.fillRect(x - br, y - br, br * 2, br * 2);
-        }
-      }
-      P.washPat = fixPat(this.ctx.createPattern(t2, 'repeat'));
-    }
-    // Paper grain tile.
-    const G = 96;
-    this.grain = makeCanvas(G, G);
-    {
-      const g = ctx2d(this.grain);
+    for (let c = 1; c <= 7; c++) this.attachTex(c);
+    // Paper grain tile (shared per paper).
+    const gk = this.paper.dark ? 'd' : 'l';
+    let grain = GRAIN_CACHE.get(gk);
+    if (!grain) {
+      const G = 96, rnd = prng(77);
+      grain = makeCanvas(G, G);
+      const g = ctx2d(grain);
       const dark = this.paper.dark;
       for (let k = 0; k < 900; k++) {
         g.fillStyle = rnd() < 0.5 ? (dark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.22)') : (dark ? 'rgba(0,0,0,0.22)' : 'rgba(90,70,40,0.07)');
         g.fillRect(rnd() * G, rnd() * G, 1, 1);
       }
+      GRAIN_CACHE.set(gk, grain);
     }
-    // Sparkle sprite.
-    {
+    this.grain = grain;
+    if (!SPARKLE) {
       const S = 48;
-      this.sparkle = makeCanvas(S, S);
-      const g = ctx2d(this.sparkle);
+      SPARKLE = makeCanvas(S, S);
+      const g = ctx2d(SPARKLE);
       const gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
       gr.addColorStop(0, 'rgba(255,250,225,0.9)');
       gr.addColorStop(0.3, 'rgba(255,240,190,0.35)');
@@ -785,41 +883,46 @@ export class BoardRenderer {
       starPath(g, S / 2, S / 2, S * 0.46);
       g.fill();
     }
-    // Seed droplet sprites.
+    this.sparkle = SPARKLE;
     this.dropSprites = [];
+  }
+
+  /** Seed droplet sprite for a colour (built on first use for the current cell size). */
+  private dropSprite(c: number): HTMLCanvasElement {
+    const have = this.dropSprites[c];
+    if (have) return have;
+    const d = this.dpr, s = this.lay.cell, P = this.pal[c];
     const R = s * 0.2;
     const SW = Math.ceil(R * 2.8 * d), SH = Math.ceil(R * 3.4 * d);
-    for (let c = 1; c <= 7; c++) {
-      const P = this.pal[c];
-      const sp = makeCanvas(SW, SH), g = ctx2d(sp);
-      g.setTransform(d, 0, 0, d, 0, 0);
-      const cx = SW / d / 2, cy = SH / d * 0.6;
-      const drop = (rr: number) => {
-        g.beginPath();
-        g.moveTo(cx, cy - rr * 2.05);
-        g.bezierCurveTo(cx + rr * 0.35, cy - rr * 1.3, cx + rr, cy - rr * 0.75, cx + rr, cy);
-        g.arc(cx, cy, rr, 0, Math.PI);
-        g.bezierCurveTo(cx - rr, cy - rr * 0.75, cx - rr * 0.35, cy - rr * 1.3, cx, cy - rr * 2.05);
-        g.closePath();
-      };
-      g.fillStyle = this.paper.dark ? 'rgba(0,0,0,0.35)' : 'rgba(60,40,20,0.16)';
-      g.save(); g.translate(R * 0.12, R * 0.22); drop(R); g.fill(); g.restore();
-      const gr = g.createLinearGradient(cx - R, cy - R * 2, cx + R, cy + R);
-      gr.addColorStop(0, P.light);
-      gr.addColorStop(0.45, P.body);
-      gr.addColorStop(1, P.edge);
-      g.fillStyle = gr;
-      drop(R);
-      g.fill();
-      g.lineWidth = Math.max(1, R * 0.12);
-      g.strokeStyle = P.edge;
-      g.stroke();
-      g.fillStyle = 'rgba(255,255,255,0.75)';
+    const sp = makeCanvas(SW, SH), g = ctx2d(sp);
+    g.setTransform(d, 0, 0, d, 0, 0);
+    const cx = SW / d / 2, cy = SH / d * 0.6;
+    const drop = (rr: number) => {
       g.beginPath();
-      g.ellipse(cx - R * 0.38, cy - R * 0.35, R * 0.18, R * 0.32, -0.5, 0, TAU);
-      g.fill();
-      this.dropSprites[c] = sp;
-    }
+      g.moveTo(cx, cy - rr * 2.05);
+      g.bezierCurveTo(cx + rr * 0.35, cy - rr * 1.3, cx + rr, cy - rr * 0.75, cx + rr, cy);
+      g.arc(cx, cy, rr, 0, Math.PI);
+      g.bezierCurveTo(cx - rr, cy - rr * 0.75, cx - rr * 0.35, cy - rr * 1.3, cx, cy - rr * 2.05);
+      g.closePath();
+    };
+    g.fillStyle = this.paper.dark ? 'rgba(0,0,0,0.35)' : 'rgba(60,40,20,0.16)';
+    g.save(); g.translate(R * 0.12, R * 0.22); drop(R); g.fill(); g.restore();
+    const gr = g.createLinearGradient(cx - R, cy - R * 2, cx + R, cy + R);
+    gr.addColorStop(0, P.light);
+    gr.addColorStop(0.45, P.body);
+    gr.addColorStop(1, P.edge);
+    g.fillStyle = gr;
+    drop(R);
+    g.fill();
+    g.lineWidth = Math.max(1, R * 0.12);
+    g.strokeStyle = P.edge;
+    g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.75)';
+    g.beginPath();
+    g.ellipse(cx - R * 0.38, cy - R * 0.35, R * 0.18, R * 0.32, -0.5, 0, TAU);
+    g.fill();
+    this.dropSprites[c] = sp;
+    return sp;
   }
 
   private buildBoardClip(): void {
@@ -835,7 +938,7 @@ export class BoardRenderer {
   }
 
   private ensureFinLayers(): void {
-    if (!this.sim || !this.stat) return;
+    if (!this.sim || (!this.stat && !this.thumb)) return;
     if (!this.statFin) this.statFin = this.buildStatic(null, true);
     if (!this.inkFin) {
       this.inkFin = makeCanvas(this.RW, this.RH);
@@ -861,11 +964,63 @@ export class BoardRenderer {
     const W = sim.w, n = sim.w * sim.h;
     const cx0 = this.lay.x, cy0 = this.lay.y;
     const seed = 1234 + W * 31 + sim.h * 7;
-    const rnd = prng(seed);
 
-    // --- paper mask (board silhouette with a deckled edge)
-    let mask = this.paperMask;
-    if (!fin || !mask) {
+    // --- ink-independent ground (shadow, deckled paper, rim, frame, slow paper, walls): shared cache
+    let geo = '';
+    for (let i = 0; i < n; i++) geo += L.hole[i] ? 'h' : L.wall[i] ? '#' : L.slow[i] ? '~' : '.';
+    const gkey = P.id + '|' + d + '|' + this.RW + 'x' + this.RH + '|' + this.ox + ',' + this.oy + '|' + s + '|' + pad + '|' + W + '|' + geo;
+    let ground = lruGet(PAPER_CACHE, gkey)?.ground;
+    if (!ground) {
+      ground = this.buildGround(seed);
+      paperCachePut(gkey, { ground });
+    }
+    g.save();
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.drawImage(ground, 0, 0);
+    g.restore();
+
+    // --- gates
+    for (let i = 0; i < n; i++) if (L.gate[i]) this.drawGate(g, i);
+    // --- seed stains
+    for (let i = 0; i < n; i++) {
+      const c = L.seed[i];
+      if (!c) continue;
+      const cc = this.cellCenter(i);
+      g.fillStyle = this.pal[c].wash;
+      g.beginPath();
+      blobPath(g, cc.x, cc.y + s * 0.04, s * 0.3, i * 3 + 1, 0.12);
+      g.fill();
+    }
+    if (!fin) {
+      this.drawGrid(g);
+      this.drawGoals(g);
+    } else {
+      // Clean cells keep their pristine paper in the finished painting.
+      for (const i of L.whites) {
+        const r = this.cellRect(i);
+        g.fillStyle = P.dark ? rgba('#ffffff', 0.04) : rgba('#ffffff', 0.35);
+        g.beginPath();
+        rrect(g, r.x + s * 0.12, r.y + s * 0.12, s * 0.76, s * 0.76, s * 0.14);
+        g.fill();
+      }
+    }
+    return out;
+  }
+
+  /** Ink-independent static ground: drop shadow, textured deckled paper, frame line, slow paper, walls. */
+  private buildGround(seed: number): HTMLCanvasElement {
+    const sim = this.sim!;
+    const L = sim.L;
+    const d = this.dpr, s = this.lay.cell, pad = this.pad;
+    const P = this.paper;
+    const W = sim.w, n = sim.w * sim.h;
+    const cx0 = this.lay.x, cy0 = this.lay.y;
+    const rnd = prng(seed);
+    const out = makeCanvas(this.RW, this.RH);
+    const g = this.layerCtx(out);
+    // --- paper mask (board silhouette with a deckled edge) and textured paper: shared cache
+    let mask: HTMLCanvasElement;
+    {
       mask = makeCanvas(this.RW, this.RH);
       const m = this.layerCtx(mask);
       m.fillStyle = '#000';
@@ -890,7 +1045,7 @@ export class BoardRenderer {
             let ex: number, ey: number;
             if (k === 0) { ex = px + t; ey = py - pad; } else if (k === 2) { ex = px + t; ey = py + s + pad; }
             else if (k === 1) { ex = px + s + pad; ey = py + t; } else { ex = px - pad; ey = py + t; }
-            const r = 0.5 + rnd() * 1.1;
+            const r = (0.5 + rnd() * 1.1) * (P.dark ? 0.55 : 1);
             if (rnd() < 0.55) { bites.moveTo(ex + r, ey); bites.arc(ex, ey, r, 0, TAU); }
             else { const ox = DIRX[k] * r * 0.4, oy = DIRY[k] * r * 0.4; bumps.moveTo(ex + ox + r * 0.8, ey + oy); bumps.arc(ex + ox, ey + oy, r * 0.8, 0, TAU); }
           }
@@ -900,13 +1055,11 @@ export class BoardRenderer {
       m.globalCompositeOperation = 'destination-out';
       m.fill(bites);
       m.globalCompositeOperation = 'source-over';
-      this.paperMask = mask;
     }
 
     // --- paper texture (clipped to the mask), with soft inner edge tone
-    let paperC = this.paperLayer;
-    if (!fin || !paperC) {
-      paperC = makeCanvas(this.RW, this.RH);
+    const paperC = makeCanvas(this.RW, this.RH);
+    {
       const pg = ctx2d(paperC);
       this.paintPaperTexture(pg, this.RW, this.RH, prng(seed + 1));
       // inner edge tone
@@ -925,7 +1078,6 @@ export class BoardRenderer {
       pg.globalCompositeOperation = 'destination-in';
       pg.drawImage(mask, 0, 0);
       pg.globalCompositeOperation = 'source-over';
-      this.paperLayer = paperC;
     }
     // shadow + paper
     g.save();
@@ -989,31 +1141,6 @@ export class BoardRenderer {
     this.drawSlow(g, prng(seed + 2));
     // --- walls
     this.drawWalls(g, prng(seed + 3));
-    // --- gates
-    for (let i = 0; i < n; i++) if (L.gate[i]) this.drawGate(g, i);
-    // --- seed stains
-    for (let i = 0; i < n; i++) {
-      const c = L.seed[i];
-      if (!c) continue;
-      const cc = this.cellCenter(i);
-      g.fillStyle = this.pal[c].wash;
-      g.beginPath();
-      blobPath(g, cc.x, cc.y + s * 0.04, s * 0.3, i * 3 + 1, 0.12);
-      g.fill();
-    }
-    if (!fin) {
-      this.drawGrid(g);
-      this.drawGoals(g);
-    } else {
-      // Clean cells keep their pristine paper in the finished painting.
-      for (const i of L.whites) {
-        const r = this.cellRect(i);
-        g.fillStyle = P.dark ? rgba('#ffffff', 0.04) : rgba('#ffffff', 0.35);
-        g.beginPath();
-        rrect(g, r.x + s * 0.12, r.y + s * 0.12, s * 0.76, s * 0.76, s * 0.14);
-        g.fill();
-      }
-    }
     return out;
   }
 
@@ -1793,8 +1920,7 @@ export class BoardRenderer {
     for (let i = 0; i < n; i++) {
       const c = sim.seed[i];
       if (!c) continue;
-      const sp = this.dropSprites[c];
-      if (!sp) continue;
+      const sp = this.dropSprite(c);
       const cc = this.cellCenter(i);
       let sc = rm ? 1 : 1 + 0.05 * Math.sin(now / 420 + i);
       const waking = !this.win && this.wakeHints.indexOf(i) >= 0;
@@ -2262,10 +2388,10 @@ export function renderThumbnail(sim: Sim, px: number, opts: BoardOptions): HTMLC
   const canvas = document.createElement('canvas');
   const r = new BoardRenderer(canvas, { ...opts, reducedMotion: true });
   r.maxCell = 4096;
+  r.thumb = true;
   r.setSim(sim);
   r.layout(px, px, 1);
-  r.finishInstant();
-  r.render(performance.now());
+  r.drawThumb();
   r.dispose();
   canvas.style.width = '';
   canvas.style.height = '';

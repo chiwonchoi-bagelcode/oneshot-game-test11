@@ -20,7 +20,7 @@ export const TEMPO = {
   /** Settings → "Relaxed tempo" multiplies the beat length by this. */
   relaxedMul: 1.35,
   /** A tap this soon after a beat still counts for the previous beat (touch latency forgiveness). */
-  graceMs: 110,
+  graceMs: 90,
   /** Speed-up once every ink is down and the result is already decided. */
   fastForwardMul: 3,
   /** Pause after the last change before the result appears (ms). */

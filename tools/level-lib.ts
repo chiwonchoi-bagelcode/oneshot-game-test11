@@ -1287,13 +1287,16 @@ export function buildReport(rows: ReportRow[]): string {
   }
   out.push('## Summary');
   out.push('');
+  out.push('Bot ranges leave out the intro levels and the c1-01..c1-04 tutorial (they are meant to be easy).');
+  out.push('');
   out.push('| group | levels | avg diff | needs timing | ≥2 timed drops | random % (min–max) | greedy % (min–max) | max inks | max board |');
   out.push('|---|---|---|---|---|---|---|---|---|');
   for (const [g, rs] of groups) {
     const avg = rs.reduce((a, r) => a + r.metrics.diff, 0) / rs.length;
     const nt = rs.filter((r) => r.metrics.needsTiming === true).length;
     const t2 = rs.filter((r) => r.metrics.timedDrops >= 2).length;
-    const rnd = rs.map((r) => r.metrics.random), grd = rs.map((r) => r.metrics.greedy);
+    const graded = rs.filter((r) => !r.def.intro && !/^c1-0[1-4]$/.test(r.def.id));
+    const rnd = graded.map((r) => r.metrics.random), grd = graded.map((r) => r.metrics.greedy);
     const mi = Math.max(...rs.map((r) => r.metrics.inks));
     const mb = rs.reduce((b, r) => (r.def.map[0].length * r.def.map.length > b[0] * b[1] ? [r.def.map[0].length, r.def.map.length] : b), [0, 0]);
     out.push('| ' + g + ' | ' + rs.length + ' | ' + avg.toFixed(1) + ' | ' + nt + ' (' + Math.round((nt * 100) / rs.length) + '%) | ' + t2 + ' (' + Math.round((t2 * 100) / rs.length) + '%) | ' + pct(Math.min(...rnd)) + '–' + pct(Math.max(...rnd)) + ' | ' + pct(Math.min(...grd)) + '–' + pct(Math.max(...grd)) + ' | ' + mi + ' | ' + mb[0] + '×' + mb[1] + ' |');
@@ -1307,7 +1310,7 @@ export function buildReport(rows: ReportRow[]): string {
     for (const r of rs) {
       const d = r.def, m = r.metrics;
       const nt = m.needsTiming === true ? 'yes' : m.needsTiming === false ? 'no' : '?';
-      out.push('| ' + d.id + ' | ' + d.map[0].length + '×' + d.map.length + ' | ' + d.inks.join(' ') + ' | ' + (d.tag || '') + ' | ' + (d.intro || '') + (d.guided ? ' (guided)' : '') + ' | ' + m.diff + ' | ' + pct(m.random) + ' | ' + pct(m.greedy) + ' | ' + nt + ' | ' + m.timedDrops + ' | ' + (m.solutions === null ? '-' : m.solutions) + ' | ' + r.uses.filter((u) => u !== 'drop').join(' ') + ' | `' + solutionString(d) + '` |');
+      out.push('| ' + d.id + ' | ' + d.map[0].length + '×' + d.map.length + ' | ' + d.inks.join(' ') + ' | ' + (d.tag || '') + ' | ' + (d.intro || '') + (d.guided ? ' (guided)' : '') + ' | ' + m.diff + ' | ' + pct(m.random) + ' | ' + pct(m.greedy) + ' | ' + nt + ' | ' + m.timedDrops + ' | ' + (m.solutions === null ? '-' : m.solutions >= 5000 ? '5000+' : m.solutions) + ' | ' + r.uses.filter((u) => u !== 'drop').join(' ') + ' | `' + solutionString(d) + '` |');
     }
   }
   out.push('');

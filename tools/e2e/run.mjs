@@ -24,12 +24,18 @@ const report = [];
 const log = (...a) => { console.log(...a); report.push(a.join(' ')); };
 
 async function startServer() {
-  const p = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], { cwd: new URL('../../', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });
+  const root = new URL('../../', import.meta.url).pathname;
+  // Static test build (debug hooks on) so file changes can't reload the page mid-test.
+  if (!process.env.E2E_NO_BUILD) {
+    const { execSync } = await import('node:child_process');
+    execSync('npx vite build --outDir dist-test --emptyOutDir', { cwd: root, stdio: 'ignore', env: { ...process.env, VITE_DEBUG: '1' } });
+  }
+  const p = spawn('npx', ['vite', 'preview', '--outDir', 'dist-test', '--port', String(PORT), '--strictPort'], { cwd: root, stdio: ['ignore', 'ignore', 'ignore'], detached: true });
   for (let i = 0; i < 60; i++) {
     try { const r = await fetch(BASE); if (r.ok) return p; } catch {}
     await sleep(500);
   }
-  throw new Error('dev server did not start');
+  throw new Error('preview server did not start');
 }
 
 const DEVICES = {
@@ -47,6 +53,7 @@ async function newPage(browser, device = 'iphone', { lang = 'ko', notch = true, 
   await page.goto(BASE);
   await page.waitForFunction(() => !!window.__ink, null, { timeout: 20000 });
   if (notch) await page.evaluate(() => window.__ink.notch(true));
+  await page.evaluate(() => window.__ink.hideDebug());
   page._errors = errors;
   return page;
 }
@@ -164,6 +171,8 @@ async function persist(browser) {
   await page.waitForFunction(() => !!window.__ink);
   const after = await page.evaluate(() => ({ coins: window.__ink.store.data.coins, lv: Object.keys(window.__ink.store.data.levels).length }));
   log('persist:', JSON.stringify(before), '→', JSON.stringify(after), before.coins === after.coins && before.lv === after.lv ? 'OK' : 'MISMATCH');
+  await page.waitForFunction(() => window.__ink.screen() === 'title');
+  await sleep(500);
   await page.touchscreen.tap(195, 500);
   await sleep(800);
   log('after restart screen:', await page.evaluate(() => window.__ink.screen()));
@@ -177,11 +186,14 @@ async function flows(browser) {
   await page.evaluate(() => window.__ink.go('play', { index: 11 }));
   await sleep(500);
   await closePopups(page);
-  // Make a wrong move: drop every ink on the first free cells right away.
-  const canvas = await page.locator('.screen.active canvas').boundingBox();
-  for (let k = 0; k < 6; k++) {
-    await page.touchscreen.tap(canvas.x + 20 + k * 3, canvas.y + canvas.height / 2);
-    await sleep(80);
+  // Make a wrong move: drop every ink on cells that are not part of the solution, right away.
+  const info = await page.evaluate(() => window.__ink.info());
+  const sol = new Set(info.solution.map((d) => d.y * info.w + d.x));
+  const picks = info.droppable.filter((i) => !sol.has(i));
+  for (let k = 0; k < 4 && k < picks.length; k++) {
+    const p = await page.evaluate((i) => window.__ink.cellCenter(i), picks[k * 3 % picks.length]);
+    await page.touchscreen.tap(p.x, p.y);
+    await sleep(60);
   }
   await waitPhase(page, ['lost', 'won'], 30000).catch(() => {});
   await sleep(1200);
@@ -196,11 +208,66 @@ async function flows(browser) {
   await page.context().close();
 }
 
+/** Plays levels like a person: real tempo, taps at the solution cells on the right beats. */
+async function playthrough(browser) {
+  const N = +(process.env.PT_LEVELS || 12);
+  const page = await newPage(browser, 'iphone');
+  await page.waitForFunction(() => window.__ink.screen() === 'title');
+  await sleep(400);
+  await page.touchscreen.tap(195, 600);
+  for (let i = 0; i < N; i++) {
+    await page.waitForFunction(() => window.__ink.screen() === 'play' && window.__ink.state()?.phase === 'idle', null, { timeout: 15000 });
+    await sleep(450);
+    // Intro cards (chapter / new rule): screenshot, then dismiss with their button.
+    for (let k = 0; k < 3; k++) {
+      if (!(await page.locator('.popup').count())) break;
+      await shot(page, `pt-${String(i + 1).padStart(2, '0')}-card${k}`);
+      await tapSel(page, '.popup .popup-foot .btn');
+      await sleep(450);
+    }
+    const info = await page.evaluate(() => window.__ink.info());
+    const t0 = Date.now();
+    for (const d of info.solution) {
+      // wait for the beat
+      await page.waitForFunction((t) => window.__ink.state().tick >= t, d.t, { timeout: 20000 });
+      const st = await page.evaluate(() => window.__ink.state());
+      if (st.tick > d.t) log(`  L${i + 1}: missed beat ${d.t} (now ${st.tick})`);
+      if (d.t > 0) await sleep(170); // human reaction after the beat changes
+      const p = await page.evaluate((i) => window.__ink.cellCenter(i), d.y * info.w + d.x);
+      await page.touchscreen.tap(p.x, p.y);
+      await sleep(40);
+    }
+    try {
+      await waitPhase(page, ['won', 'lost'], 40000);
+    } catch { log(`  L${i + 1}: timeout`); }
+    const st = await page.evaluate(() => window.__ink.state());
+    log(`L${i + 1} ${st.level}: ${st.phase} in ${((Date.now() - t0) / 1000).toFixed(1)}s, seal=${st.sealedEligible}`);
+    if (st.phase !== 'won') { await shot(page, `pt-${String(i + 1).padStart(2, '0')}-FAIL`); break; }
+    await page.waitForSelector('.sheet.open', { timeout: 15000 });
+    await sleep(1600);
+    if (i < 3 || i % 4 === 0) await shot(page, `pt-${String(i + 1).padStart(2, '0')}-result`);
+    await tapSel(page, '.sheet.open .sheet-actions .btn-lg');
+    await sleep(500);
+    // reward / unlock popups after "next"
+    for (let k = 0; k < 4; k++) {
+      if (!(await page.locator('.popup').count())) break;
+      await shot(page, `pt-${String(i + 1).padStart(2, '0')}-after${k}`);
+      const btn = page.locator('.popup .popup-foot .btn').first();
+      if (await btn.count()) await btn.click(); else await page.locator('.popup').last().click({ position: { x: 20, y: 20 } });
+      await sleep(600);
+      if (await page.locator('.popup').count()) { await page.locator('.popup').last().click({ position: { x: 20, y: 20 } }); await sleep(500); }
+    }
+  }
+  log('playthrough errors:', JSON.stringify(page._errors.slice(0, 5)));
+  await page.context().close();
+}
+
 // ----------------------------------------------------------------
 const server = await startServer();
 const browser = await chromium.launch();
 try {
   if (want('firstrun')) await firstrun(browser);
+  if (args.includes('playthrough')) await playthrough(browser);
   if (want('screens')) await screens(browser);
   if (want('flows')) await flows(browser);
   if (want('persist')) await persist(browser);
@@ -209,6 +276,7 @@ try {
   log('E2E crashed:', e.stack || e);
 } finally {
   await browser.close();
-  server.kill();
+  try { process.kill(-server.pid, 'SIGTERM'); } catch {}
+  process.exit(0);
   writeFileSync(OUT + 'report.txt', report.join('\n'));
 }

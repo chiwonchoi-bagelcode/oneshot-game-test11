@@ -15,7 +15,7 @@ import { t, fmt, onLangChange } from '../i18n/i18n.ts';
 import { audio } from '../audio/index.ts';
 
 export function createChapterScreen(): Screen {
-  const top = createTopbar({ left: 'back', onBack: () => back() || go('journey', undefined, { resetHistory: true }), wallet: ['coins', 'hints'] });
+  const top = createTopbar({ left: 'back', onBack: () => back() || go('journey', undefined, { resetHistory: true }) });
   const body = h('div.screen-body');
   const el = h('section.chapter', null, top.el, body);
 
@@ -143,10 +143,13 @@ export function createChapterScreen(): Screen {
       refresh();
       audio.setMusic('menu');
       // Bring the current level into view without a visible jump.
+      // Only scroll when the current level would sit under the floating play button.
+      body.scrollTop = 0;
       const cur = grid.querySelector('.lv.current') as HTMLElement | null;
       if (cur) {
-        const r = cur.offsetTop - body.clientHeight * 0.5;
-        if (r > 0) body.scrollTop = r;
+        const bottom = cur.offsetTop + cur.offsetHeight;
+        const visible = body.clientHeight - 110;
+        if (bottom > visible) body.scrollTop = bottom - visible + 24;
       }
     },
   };

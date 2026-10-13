@@ -20,7 +20,7 @@ export function createJourneyScreen(): Screen {
   const el = h('section.journey', null, top.el, body);
 
   // Hero (current chapter)
-  const heroChip = h('span.chip.jade');
+  const heroChip = h('span.chip.jade.hero-chip');
   const heroArt = h('div.hero-art');
   const heroName = h('h2');
   const heroLine = h('p');

@@ -923,7 +923,7 @@ function mapleValley(): Painting {
   const canopy = (cx: number, cy: number, n: number, spread: number, cols: string[], size: number): Sh[] =>
     Array.from({ length: n }, (_, k) => {
       const t = k / n, sz = size * (1.15 - 0.55 * t) * (0.8 + r() * 0.4);
-      return F(blob(cx + (r() - 0.5) * spread * (1 - t * 0.4), cy + (r() - 0.5) * spread * 0.5, sz, sz * (0.62 + r() * 0.2), r, 0.16, 12), cols[k % cols.length], 0.58 + 0.2 * t);
+      return F(blob(cx + (r() - 0.5) * spread * (1 - t * 0.4), cy + (r() - 0.5) * spread * 0.5, sz, sz * (0.62 + r() * 0.2), r, 0.16, 9), cols[k % cols.length], 0.58 + 0.2 * t);
     });
   // 0 sky
   R.push([G(rect(0, 0, 300, 120), '@sky', 1), F(sm([[160, 22], [210, 17], [262, 21], [220, 25]], true), '#ffffff', 0.6, null)]);
@@ -1145,7 +1145,8 @@ export function paintingSVG(chapter: number, revealed: number, opts?: { idPrefix
   out += '<rect width="300" height="200" fill="url(#' + prefix + 'tx)" opacity=".55" pointer-events="none"/>';
   const [sx, sy] = P.seal;
   out += '<g class="seal"><rect x="' + (sx - 7) + '" y="' + (sy - 7) + '" width="14" height="14" rx="2" fill="#c63b2d" fill-opacity=".88"/>' +
-    '<path d="M' + (sx - 4) + ' ' + (sy - 3.5) + 'h8M' + (sx - 4) + ' ' + (sy + 3.5) + 'h8M' + sx + ' ' + (sy - 3.5) + 'v7M' + (sx - 4) + ' ' + sy + 'h3M' + (sx + 1) + ' ' + sy + 'h3" stroke="#f8e7dc" stroke-width="1.1" fill="none" stroke-linecap="round"/></g>';
+    '<rect x="' + (sx - 5.4) + '" y="' + (sy - 5.4) + '" width="10.8" height="10.8" rx="1.2" fill="none" stroke="#f8e7dc" stroke-width=".7"/>' +
+    '<path d="M' + sx + ' ' + (sy - 3.9) + 'c0 0-2.9 3.1-2.9 4.9a2.9 2.9 0 0 0 5.8 0c0-1.8-2.9-4.9-2.9-4.9z" fill="#f8e7dc"/></g>';
   out += '</svg>';
   return out;
 }

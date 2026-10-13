@@ -55,6 +55,7 @@ export function inkForPaper(skin: InkSkin, paper: PaperSkin): Record<number, str
   const out: Record<number, string> = {};
   for (let c = 1; c <= 7; c++) {
     let col = skin.colors[c];
+    if (paper.dark && c === 7) col = mix(col, '#7a5636', 0.4); // mud stays earthy, never slate-like walls
     if (paper.dark) {
       let k = 0;
       while (k < 12 && (contrast(col, paper.base) < (c === 7 ? 3.0 : 3.6) || deltaE(col, paper.base) < 40)) {

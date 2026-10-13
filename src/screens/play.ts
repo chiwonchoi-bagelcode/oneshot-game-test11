@@ -51,7 +51,9 @@ export const debugHooks: {
   state: () => any;
   solveNow: () => void;
   setTimeScale: (k: number) => void;
-} = { autoplay: () => {}, state: () => null, solveNow: () => {}, setTimeScale: () => {} };
+  cellCenter: (idx: number) => { x: number; y: number };
+  info: () => any;
+} = { autoplay: () => {}, state: () => null, solveNow: () => {}, setTimeScale: () => {}, cellCenter: () => ({ x: 0, y: 0 }), info: () => null };
 
 const DROP_PATH = 'M20 2C20 2 5 18.5 5 28.5a15 15 0 0 0 30 0C35 18.5 20 2 20 2z';
 
@@ -325,6 +327,11 @@ export function createPlayScreen(): Screen {
 
   function updateBoosters() {
     const d = store.data;
+    sheet.querySelectorAll<HTMLElement>('[data-live]').forEach((el) => {
+      const n = d[el.dataset.live as 'hints' | 'rewinds'];
+      el.textContent = n > 0 ? fmt(n) : '+';
+      el.classList.toggle('plus', !(n > 0));
+    });
     hintCount.textContent = ctx && (ctx.guided || (ctx.mode === 'campaign' && d.hinted[ctx.def.id])) ? '' : d.hints > 0 ? fmt(d.hints) : '+';
     hintCount.classList.toggle('plus', !(d.hints > 0));
     hintCount.style.display = hintCount.textContent ? '' : 'none';
@@ -697,7 +704,7 @@ export function createPlayScreen(): Screen {
 
   function sideButton(ic: 'rewind' | 'hint', label: string, fn: () => void, count: number): HTMLElement {
     const b = iconButton(icon(ic), fn, { label });
-    if (count >= 0) b.appendChild(h('i.count' + (count > 0 ? '' : '.plus'), { text: count > 0 ? fmt(count) : '+' }));
+    if (count >= 0) b.appendChild(h('i.count' + (count > 0 ? '' : '.plus'), { text: count > 0 ? fmt(count) : '+', dataset: { live: ic === 'hint' ? 'hints' : 'rewinds' } }));
     const wrap = h('div.side', null, b, h('span', { text: label }));
     return wrap;
   }
@@ -803,7 +810,8 @@ export function createPlayScreen(): Screen {
         h('p', { text, style: { margin: '0', fontSize: '16px', lineHeight: '1.5', color: 'var(--ink-2)' } }),
       );
       const foot: HTMLElement[] = [];
-      const buy = h('button.btn.btn-gold', { type: 'button' }, h('span.btn-price', { html: icon('coin') }, h('span', { text: fmt(price) })));
+      const itemLabel = kind === 'hints' ? t('reward.hints', { n: 1 }) : t('reward.rewinds', { n: 1 });
+      const buy = h('button.btn.btn-gold.btn-col', { type: 'button' }, h('span.btn-price', { html: icon('coin') }, h('span', { text: fmt(price) })), h('span.sub', { text: itemLabel }));
       onTap(buy, () => {
         if (!spendCoins(price)) {
           p.close();
@@ -817,7 +825,7 @@ export function createPlayScreen(): Screen {
       });
       foot.push(buy);
       if (kind === 'hints' && adsLeft('hint') > 0) {
-        const ad = h('button.btn.btn-violet', { type: 'button', html: icon('ad') }, h('span', { text: t('play.watchAdFor1') }));
+        const ad = h('button.btn.btn-violet.btn-col', { type: 'button' }, h('span.btn-price', { html: icon('ad') }, h('span', { text: t('ad.watch') })), h('span.sub', { text: itemLabel }));
         onTap(ad, async () => {
           adPending = true;
           p.close();
@@ -998,7 +1006,7 @@ export function createPlayScreen(): Screen {
     const actions = h('div.sheet-actions', null, replay, nextBtn, mapBtn);
 
     let dbl: HTMLElement | null = null;
-    if (r.coins > 0 && adsLeft('double') > 0) {
+    if (r.coins > 0 && c.number > 5 && adsLeft('double') > 0) {
       dbl = button(t('result.double'), async () => {
         if (doubled) return;
         const ok = await showRewardedAd('double');
@@ -1113,6 +1121,12 @@ export function createPlayScreen(): Screen {
     if (on && sim && sim.drops.length) resetAttempt();
     kick();
   };
+  debugHooks.cellCenter = (idx: number) => {
+    const r = renderer.cellRect(idx);
+    const b = canvas.getBoundingClientRect();
+    return { x: b.left + r.x + r.size / 2, y: b.top + r.y + r.size / 2 };
+  };
+  debugHooks.info = () => (ctx && sim ? { w: sim.w, h: sim.h, solution: ctx.def.solution, droppable: Array.from(sim.ink.keys()).filter((i) => sim!.canDrop(i)) } : null);
   debugHooks.setTimeScale = (k: number) => {
     timeScale = Math.max(0.25, k);
     if (ctx) beatMs = computeBeatMs(ctx);

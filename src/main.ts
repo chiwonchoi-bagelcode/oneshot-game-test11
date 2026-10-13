@@ -100,7 +100,8 @@ async function boot(): Promise<void> {
     if (e.key === 'Escape') onBack();
   });
 
-  if (import.meta.env.DEV) initDebug(app);
+  // Debug panel: dev server, or a test build made with VITE_DEBUG=1. Never in store builds.
+  if (import.meta.env.DEV || import.meta.env.VITE_DEBUG === '1') initDebug(app);
 
   await waitFonts(1800);
   go('title', undefined, { resetHistory: true });
