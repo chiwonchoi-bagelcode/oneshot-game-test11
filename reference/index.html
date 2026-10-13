@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>잉크 밀물 · v0.1.0 · 20261012</title>
+<style>
+  :root { --bg: #1c1b22; --panel: #26252e; --text: #ece8df; --muted: #a39d93; --accent: #f2c21b; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100%; max-width: 720px; margin: 0 auto; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px 6px; }
+  header h1 { font-size: 17px; margin: 0; flex: 1; font-weight: 700; }
+  header h1 small { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 6px; }
+  header button, #ov-btns button, #level-list button, #btn-close-levels { background: var(--panel); color: var(--text); border: 1px solid #3a3944; border-radius: 10px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
+  header button:active, #ov-btns button:active { transform: translateY(1px); }
+  #tutorial { margin: 0 14px; padding: 8px 12px; background: var(--panel); border-left: 3px solid var(--accent); border-radius: 8px; font-size: 13.5px; line-height: 1.45; color: #d9d4ca; }
+  #board-wrap { flex: 1; min-height: 0; position: relative; touch-action: none; }
+  #board { display: block; touch-action: none; }
+  footer { padding: 8px 14px 12px; display: flex; align-items: center; gap: 12px; }
+  #palette { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .chip { width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.5); border: 3px solid transparent; opacity: .55; font-size: 14px; }
+  .chip.next { opacity: 1; border-color: #fff; transform: scale(1.12); box-shadow: 0 0 0 3px rgba(255,255,255,.15); }
+  .chip.used { opacity: .18; }
+  #status { color: var(--muted); font-size: 13px; text-align: right; }
+  .modal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(20,19,25,.72); padding: 20px; }
+  .modal.hidden { display: none; }
+  .card { background: var(--panel); border-radius: 16px; padding: 22px; width: 100%; max-width: 380px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .card h2 { margin: 0 0 8px; font-size: 22px; }
+  .card p { margin: 0 0 16px; color: #cfc9be; line-height: 1.5; font-size: 14.5px; }
+  #ov-btns { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  #ov-btns button.primary { background: var(--accent); color: #1c1b22; border-color: var(--accent); font-weight: 700; }
+  #level-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; max-height: 50vh; overflow: auto; }
+  #level-list button { text-align: left; font-size: 13.5px; }
+  #level-list button.cleared { border-color: #22c55e; }
+  #level-list button.locked { opacity: .35; cursor: default; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1 id="lv-title">잉크 밀물<small id="version"></small></h1>
+    <button id="btn-pause" type="button">일시정지</button>
+    <button id="btn-restart" type="button">다시</button>
+    <button id="btn-levels" type="button">목록</button>
+  </header>
+  <div id="tutorial"></div>
+  <div id="board-wrap">
+    <canvas id="board"></canvas>
+    <div id="overlay" class="modal hidden"><div class="card"><h2 id="ov-title"></h2><p id="ov-body"></p><div id="ov-btns"></div></div></div>
+    <div id="levels" class="modal hidden"><div class="card"><h2>레벨</h2><div id="level-list"></div><button id="btn-close-levels" type="button">닫기</button></div></div>
+  </div>
+  <footer><div id="palette"></div><div id="status"></div></footer>
+</div>
+<script src="js/sim.js"></script>
+<script src="data/levels.js"></script>
+<script src="data/progression.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
