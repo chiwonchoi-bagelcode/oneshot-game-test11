@@ -3,16 +3,17 @@
  * Every switch writes store.data.settings and commits 'settings' at once; main.ts applies audio
  * volumes, reduce-motion and language from there. The popup relabels itself on a language change.
  */
+import { V, IS_VARIANT } from '../variants/index.ts';
 import './meta.css';
 import './settings.css';
 import { h, onTap } from '../ui/dom.ts';
 import { icon, type IconName } from '../ui/icons.ts';
 import { openPopup } from '../ui/popup.ts';
-import { ruleDiagram } from '../ui/rule-diagrams.ts';
+import { ruleDiagramFor } from '../play/rules.ts';
 import { store } from '../state/store.ts';
 import { defaultSave, type Settings } from '../state/save.ts';
 import { clearedUpTo } from '../state/progress.ts';
-import { mechanicsKnown } from '../levels/pack.ts';
+import { mechanicsKnown, ALL_LEVELS } from '../levels/pack.ts';
 import { CHAPTER_DEFS } from '../levels/chapters.ts';
 import { TEMPO } from '../config/balance.ts';
 import { restorePurchases } from '../services/iap.ts';
@@ -45,7 +46,8 @@ const SWITCHES: SwitchDef[] = [
   { key: 'music', icon: 'music', label: 'settings.music' },
   { key: 'vibration', icon: 'vibrate', label: 'settings.vibration' },
   { key: 'symbols', icon: 'symbols', label: 'settings.symbols', sub: () => t('settings.symbols.sub') },
-  { key: 'relaxed', icon: 'tempo', label: 'settings.relaxed', sub: () => t('settings.relaxed.sub', { n: Math.round((TEMPO.relaxedMul - 1) * 100) }) },
+  // Only beat-based versions have a tempo to relax.
+  ...(V.beats ? [{ key: 'relaxed' as SwitchKey, icon: 'tempo' as const, label: 'settings.relaxed', sub: () => t('settings.relaxed.sub', { n: Math.round((TEMPO.relaxedMul - 1) * 100) }) }] : []),
   { key: 'reducedMotion', icon: 'motion', label: 'settings.motion', sub: () => t('settings.motion.sub') },
 ];
 
@@ -148,7 +150,18 @@ export function openSettings(): void {
 }
 
 /** Rules learned so far, in the order the journey teaches them. */
-function learnedRules(): MechanicKey[] {
+function learnedRules(): string[] {
+  if (IS_VARIANT) {
+    // Test versions: every rule card seen so far (or belonging to a cleared stage), in stage order.
+    const upTo = clearedUpTo();
+    const out: string[] = [];
+    ALL_LEVELS.forEach((l, i) => {
+      const k = l.intro;
+      if (k && !out.includes(k) && (i <= upTo || store.data.seen['mech.' + k])) out.push(k);
+    });
+    if (!out.length && ALL_LEVELS[0]?.intro) out.push(ALL_LEVELS[0].intro);
+    return out;
+  }
   const known = mechanicsKnown(clearedUpTo());
   const order: MechanicKey[] = [];
   for (const c of CHAPTER_DEFS) for (const m of c.teaches) if (!order.includes(m)) order.push(m);
@@ -161,7 +174,7 @@ export function openRulesBook(): void {
   const list = h('div.rules-list');
   for (const m of learnedRules()) {
     list.appendChild(h('div.rule-item', null,
-      h('div.ri-diagram', null, ruleDiagram(m)),
+      h('div.ri-diagram', null, ruleDiagramFor(m)),
       h('b.ri-title', { text: t('mech.' + m + '.title') }),
       h('p.ri-body', { text: t('mech.' + m + '.body') }),
     ));

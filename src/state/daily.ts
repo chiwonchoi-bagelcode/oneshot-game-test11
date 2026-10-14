@@ -4,6 +4,7 @@
  * the all-three bonus and streak milestones. The play screen starts a daily with
  * go('play', { daily: tier }) and reports the clear through recordDailyClear().
  */
+import { V } from '../variants/index.ts';
 import { DAILY, type Reward } from '../config/balance.ts';
 import { DAILY_POOL, ALL_LEVELS, mechanicsKnown, type DailyDef } from '../levels/pack.ts';
 import type { LevelDef, MechanicKey } from '../core/sim.ts';
@@ -43,6 +44,7 @@ export interface Milestone {
 const HISTORY_DAYS = 60;
 
 export function dailyUnlocked(): boolean {
+  if (!V.daily) return false;
   return clearedCount() >= DAILY.unlockAfterLevel;
 }
 

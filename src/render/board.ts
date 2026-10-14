@@ -15,7 +15,7 @@
  * Colour textures (granulation / wash tiles, glow sprites) are cached per colour across renderers.
  * render() returns false when nothing animates, so the caller can stop its rAF loop.
  */
-import { Sim, WHITE, type SimEvent } from '../core/sim.ts';
+import { Sim, WHITE, type SimEvent, type ParsedLevel } from '../core/sim.ts';
 import { inkSkin, paperSkin, inkForPaper, type PaperSkin } from './skins.ts';
 import { drawGlyph } from './glyphs.ts';
 import { mix, shade, rgba, hash01, prng, luminance } from './color.ts';
@@ -441,6 +441,16 @@ export class BoardRenderer {
     this.computeLayout(false);
     this.needsDraw = true;
     return { ...this.lay };
+  }
+
+  /**
+   * The sim was edited directly (cores that paint cells themselves): redraw the ink layer.
+   * Cells that lost ink or changed colour are picked up automatically.
+   */
+  invalidate(): void {
+    this.cacheDirty = true;
+    this.simSig = -1;
+    this.needsDraw = true;
   }
 
   cellAt(cssX: number, cssY: number): number {
@@ -1269,16 +1279,54 @@ export class BoardRenderer {
     g.stroke();
   }
 
+  /** Regions (colouring-book levels): the one cell per region that carries its marker. */
+  private labelCells(): Set<number> | null {
+    const L = this.sim!.L;
+    if (!L.region) return null;
+    if (this.labelCache && this.labelCache.L === L) return this.labelCache.set;
+    const w = this.sim!.w, n = L.region.length;
+    const groups = new Map<number, number[]>();
+    for (let i = 0; i < n; i++) {
+      const r = L.region[i];
+      if (r < 0) continue;
+      let gl = groups.get(r);
+      if (!gl) groups.set(r, (gl = []));
+      gl.push(i);
+    }
+    const set = new Set<number>();
+    for (const cells of groups.values()) {
+      let sx = 0, sy = 0;
+      for (const i of cells) { sx += i % w; sy += Math.floor(i / w); }
+      const mx = sx / cells.length, my = sy / cells.length;
+      let best = cells[0], bd = Infinity;
+      for (const i of cells) {
+        // Prefer cells deep inside the region (most same-region neighbours), then the centroid.
+        const x = i % w, y = Math.floor(i / w);
+        let inner = 0;
+        for (let k = 0; k < 4; k++) { const nb = this.nb(i, k); if (nb >= 0 && L.region[nb] === L.region[i]) inner++; }
+        const d = (x - mx) ** 2 + (y - my) ** 2 - inner * 0.6;
+        if (d < bd) { bd = d; best = i; }
+      }
+      set.add(best);
+    }
+    this.labelCache = { L, set };
+    return set;
+  }
+  private labelCache: { L: ParsedLevel; set: Set<number> } | null = null;
+
   private drawGoals(g: CanvasRenderingContext2D): void {
     const sim = this.sim!, L = sim.L, s = this.lay.cell;
     const P = this.paper;
+    const labels = this.labelCells();
     for (const i of L.targets) {
       const c = L.goal[i], Pc = this.pal[c];
       const r = this.cellRect(i), cx = r.x + s / 2, cy = r.y + s / 2;
       g.fillStyle = Pc.wash;
       g.beginPath();
-      rrect(g, r.x + s * 0.09, r.y + s * 0.09, s * 0.82, s * 0.82, s * 0.2);
+      if (labels) g.rect(r.x, r.y, s, s); // regions: a continuous wash, marker only on the label cell
+      else rrect(g, r.x + s * 0.09, r.y + s * 0.09, s * 0.82, s * 0.82, s * 0.2);
       g.fill();
+      if (labels && !labels.has(i)) continue;
       const lw = Math.max(2, s * 0.062);
       g.strokeStyle = P.dark ? 'rgba(0,0,0,0.35)' : rgba(P.base, 0.9);
       g.lineWidth = lw + 2.2;
@@ -1690,6 +1738,7 @@ export class BoardRenderer {
 
   private draw(now: number, previewLive: boolean): void {
     const ctx = this.ctx, d = this.dpr;
+    const sim0 = this.sim!;
     const win = this.win;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
@@ -1718,6 +1767,7 @@ export class BoardRenderer {
     for (const [i, gr] of this.grow) this.drawGrowth(ctx, i, gr, clamp01((now - gr.t0) / gr.dur));
     ctx.globalAlpha = 1;
 
+    if (sim0.L.region) this.drawRegionLines(ctx, win ? 1 - fade * 0.6 : 1);
     this.drawSeeds(ctx, now);
     if (showPreview && this.mixHints.length) this.drawMixHints(ctx, now);
     this.drawMetMarks(ctx, now, win ? 1 - fade : 1);
@@ -1728,6 +1778,34 @@ export class BoardRenderer {
     this.drawFx(ctx, now);
     if (win) this.drawWin(ctx, now, wk);
     this.drawParticles(ctx, now);
+  }
+
+  /** Pencil outlines between regions (colouring-book levels), cached per layout. */
+  private regionLines: { key: string; path: Path2D } | null = null;
+  private drawRegionLines(ctx: CanvasRenderingContext2D, alpha: number): void {
+    const sim = this.sim!, L = sim.L, R = L.region!, W = sim.w, H = sim.h, s = this.lay.cell;
+    const key = this.lay.x + ',' + this.lay.y + ',' + s + ',' + L.def.id;
+    if (!this.regionLines || this.regionLines.key !== key) {
+      const p = new Path2D();
+      const x0 = this.lay.x, y0 = this.lay.y;
+      const reg = (x: number, y: number) => (x < 0 || y < 0 || x >= W || y >= H ? -2 : L.hole[y * W + x] ? -2 : L.wall[y * W + x] ? -3 : R[y * W + x]);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const a = reg(x, y);
+        if (a === -2) continue;
+        // right and bottom edges where the region changes (outer edges come from the paper border)
+        const r = reg(x + 1, y), b = reg(x, y + 1);
+        if (r !== -2 && r !== a) { p.moveTo(x0 + (x + 1) * s, y0 + y * s); p.lineTo(x0 + (x + 1) * s, y0 + (y + 1) * s); }
+        if (b !== -2 && b !== a) { p.moveTo(x0 + x * s, y0 + (y + 1) * s); p.lineTo(x0 + (x + 1) * s, y0 + (y + 1) * s); }
+      }
+      this.regionLines = { key, path: p };
+    }
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = this.paper.dark ? 'rgba(240,235,225,0.55)' : 'rgba(60,48,40,0.55)';
+    ctx.lineWidth = Math.max(1.4, s * 0.045);
+    ctx.stroke(this.regionLines.path);
+    ctx.restore();
   }
 
   private updateBase(): void {
@@ -1986,8 +2064,10 @@ export class BoardRenderer {
       }
       return;
     }
+    const labels = this.labelCells();
     for (const t of sim.L.targets) {
       if (!this.metShown[t] || sim.ink[t] !== sim.L.goal[t]) continue;
+      if (labels && !labels.has(t)) continue;
       const P = this.pal[sim.L.goal[t]];
       const cc = this.cellCenter(t);
       ctx.globalAlpha = alpha;
@@ -2100,7 +2180,8 @@ export class BoardRenderer {
         ctx.fillStyle = rgba(P.body, 0.14);
         ctx.beginPath(); ctx.arc(cc.x, cc.y, s * 0.3, 0, TAU); ctx.fill();
       }
-      // Order badge (+ beats to wait as pips).
+      // Order badge (+ beats to wait as pips). order 0 = an unnumbered marker.
+      if (gh.order <= 0) continue;
       const bx = cc.x + s * 0.3, by = cc.y - s * 0.3, br = Math.max(8, s * 0.15);
       ctx.fillStyle = this.paper.dark ? '#f4efe4' : '#2b2622';
       ctx.globalAlpha = gh.state === 'now' ? 1 : 0.8;

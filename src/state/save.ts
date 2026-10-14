@@ -6,8 +6,11 @@ import { START } from '../config/balance.ts';
 import type { Lang } from '../i18n/i18n.ts';
 
 export const SAVE_VERSION = 1;
-const KEY = 'inkbloom.save';
-const BACKUP_KEY = 'inkbloom.save.bak';
+import { V } from '../variants/index.ts';
+
+// Each build variant keeps its own save (the original keeps 'inkbloom.save').
+const KEY = V.saveKey;
+const BACKUP_KEY = V.saveKey + '.bak';
 
 export interface LevelRecord {
   /** Cleared at least once. */

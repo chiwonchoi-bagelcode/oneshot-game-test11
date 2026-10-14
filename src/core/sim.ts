@@ -41,7 +41,10 @@ export type MechanicKey =
   | 'drop' | 'walls' | 'order' | 'mix' | 'timing' | 'parity' | 'three'
   | 'range' | 'white' | 'seed' | 'gate' | 'slow';
 
-export interface Drop { x: number; y: number; t: number }
+/** k = index of the ink in the level's ink list (omitted: the next unused ink, in order). */
+export interface Drop { x: number; y: number; t: number; k?: number }
+
+export interface Cell { x: number; y: number }
 
 export interface LevelDef {
   id: string;
@@ -56,8 +59,16 @@ export interface LevelDef {
   solution: Drop[];
   /** Beat length override in ms. */
   tempo?: number;
-  /** Mechanic introduced by this level (shows the intro card once). */
-  intro?: MechanicKey;
+  /** Mechanic introduced by this level (shows the intro card once). Variants use their own keys. */
+  intro?: MechanicKey | (string & {});
+  /** Variant D: the only cells where ink can be dropped; spot k holds ink k. */
+  spots?: Cell[];
+  /** Variant B: start cell of each ink's path (source k belongs to ink k). */
+  sources?: Cell[];
+  /** Variant B: a verified set of paths (one per ink, starting at its source). */
+  paths?: Cell[][];
+  /** Variant C: region rows; cells with the same letter form one paintable region ('.' none). */
+  regions?: string[];
   /** Tutorial level: the solution is shown step by step for free. */
   guided?: boolean;
   /** Pacing tag used by the map and the result screen. */
@@ -83,6 +94,9 @@ export interface ParsedLevel {
   inks: InkSpec[];
   targets: number[]; // goal cells with a colour
   whites: number[];  // goal cells that must stay clean
+  /** Region id per cell (-1 = none). Present only when the level defines `regions`. */
+  region?: Int16Array;
+  regionCount?: number;
 }
 
 export function parseInk(s: string): InkSpec {
@@ -125,7 +139,26 @@ export function parseLevel(def: LevelDef): ParsedLevel {
       targets.push(i);
     }
   }
-  return { def, w, h, wall, hole, slow, gate, seed, goal, inks: def.inks.map(parseInk), targets, whites };
+  const out: ParsedLevel = { def, w, h, wall, hole, slow, gate, seed, goal, inks: def.inks.map(parseInk), targets, whites };
+  if (def.regions) {
+    if (def.regions.length !== h) throw new Error(def.id + ': regions height mismatch');
+    const region = new Int16Array(n).fill(-1);
+    const ids = new Map<string, number>();
+    for (let y = 0; y < h; y++) {
+      const row = def.regions[y];
+      if (row.length !== w) throw new Error(def.id + ': regions row length mismatch at ' + y);
+      for (let x = 0; x < w; x++) {
+        const ch = row[x];
+        if (ch === '.' || ch === ' ' || ch === '#') continue;
+        let id = ids.get(ch);
+        if (id === undefined) ids.set(ch, (id = ids.size));
+        region[y * w + x] = id;
+      }
+    }
+    out.region = region;
+    out.regionCount = ids.size;
+  }
+  return out;
 }
 
 /** How a cell got its ink (for rendering and sound). */
@@ -156,7 +189,10 @@ export class Sim {
   seed: Uint8Array;
   waves: Wave[];
   tick: number;
+  /** Number of inks used so far. */
   pi: number;
+  /** used[k] = 1 once ink k has been dropped. */
+  used: Uint8Array;
   /** Drops made so far (for hints, replays and analytics). */
   drops: Drop[];
   lastEvents: SimEvent[];
@@ -176,6 +212,7 @@ export class Sim {
     this.waves = [];
     this.tick = 0;
     this.pi = 0;
+    this.used = new Uint8Array(L.inks.length);
     this.drops = [];
     this.lastEvents = [];
   }
@@ -194,6 +231,7 @@ export class Sim {
     s.waves = this.waves.map((wv) => ({ c: wv.c, range: wv.range, front: wv.front.map((f) => ({ idx: f.idx, d: f.d, wait: f.wait })) }));
     s.tick = this.tick;
     s.pi = this.pi;
+    s.used = this.used.slice();
     s.drops = this.drops.slice();
     s.lastEvents = [];
     return s;
@@ -201,7 +239,12 @@ export class Sim {
 
   idx(x: number, y: number): number { return y * this.w + x; }
   inBounds(x: number, y: number): boolean { return x >= 0 && y >= 0 && x < this.w && y < this.h; }
-  nextInk(): InkSpec | null { return this.pi < this.L.inks.length ? this.L.inks[this.pi] : null; }
+  /** Index of the next unused ink in queue order (-1 when all are used). */
+  nextInkIndex(): number {
+    for (let k = 0; k < this.used.length; k++) if (!this.used[k]) return k;
+    return -1;
+  }
+  nextInk(): InkSpec | null { const k = this.nextInkIndex(); return k >= 0 ? this.L.inks[k] : null; }
   inksLeft(): number { return this.L.inks.length - this.pi; }
   started(): boolean { return this.pi > 0; }
   /** No ink front can change the board any more. */
@@ -221,14 +264,21 @@ export class Sim {
   canDrop(idx: number): boolean { return this.dropBlock(idx) === null; }
 
   drop(idx: number): boolean {
-    if (!this.canDrop(idx)) return false;
-    const ink = this.L.inks[this.pi++];
+    return this.dropInk(idx, this.nextInkIndex());
+  }
+
+  /** Drops ink k (each ink once). */
+  dropInk(idx: number, k: number): boolean {
+    if (k < 0 || k >= this.used.length || this.used[k] || !this.canDrop(idx)) return false;
+    this.used[k] = 1;
+    this.pi++;
+    const ink = this.L.inks[k];
     this.ink[idx] = ink.c;
     this.born[idx] = this.tick;
     this.from[idx] = -1;
     this.src[idx] = SRC_DROP;
     const x = idx % this.w;
-    this.drops.push({ x, y: (idx - x) / this.w, t: this.tick });
+    this.drops.push({ x, y: (idx - x) / this.w, t: this.tick, k });
     const f: Front = { idx, d: 0, wait: this.L.slow[idx] ? 1 : 0 };
     if (f.wait || this.canGrow(f, ink.c, ink.range)) this.waves.push({ c: ink.c, range: ink.range, front: [f] });
     this.lastEvents = [{ type: 'drop', idx, c: ink.c }];
@@ -445,7 +495,8 @@ export function runSolution(level: ParsedLevel | LevelDef, drops: Drop[], maxTic
     while (pending.length && pending[0].t <= sim.tick) {
       const d = pending.shift()!;
       const i = sim.idx(d.x, d.y);
-      if (!sim.inBounds(d.x, d.y) || !sim.drop(i)) errors.push('t' + d.t + ' (' + d.x + ',' + d.y + ') blocked: ' + sim.dropBlock(i));
+      const ok = sim.inBounds(d.x, d.y) && (d.k === undefined ? sim.drop(i) : sim.dropInk(i, d.k));
+      if (!ok) errors.push('t' + d.t + ' (' + d.x + ',' + d.y + ') blocked: ' + sim.dropBlock(i));
     }
     if (sim.wrongCells().length) { failTick = sim.tick; break; }
     if (!pending.length && sim.settled()) break;

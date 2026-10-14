@@ -22,6 +22,7 @@ import { dailyBadge } from './state/daily.ts';
 import { freeGiftAvailable } from './screens/shop.ts';
 import { makePaperTexture } from './ui/paper.ts';
 import { initDebug } from './debug/debug.ts';
+import { applyVariant } from './variants/apply.ts';
 
 function applyRootFlags(): void {
   const s = store.data.settings;
@@ -46,6 +47,7 @@ async function waitFonts(ms: number): Promise<void> {
 }
 
 async function boot(): Promise<void> {
+  applyVariant();
   store.init();
   setLang(store.data.settings.lang);
   applyRootFlags();

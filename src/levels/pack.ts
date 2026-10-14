@@ -1,7 +1,13 @@
 import type { LevelDef, MechanicKey } from '../core/sim.ts';
-import { CAMPAIGN } from './data/campaign.ts';
+import { CAMPAIGN as ORIGINAL_CAMPAIGN } from './data/campaign.ts';
 import { DAILY_POOL } from './data/daily.ts';
-import { CHAPTER_DEFS, type ChapterDef } from './chapters.ts';
+import { CHAPTER_DEFS as ALL_CHAPTER_DEFS, type ChapterDef } from './chapters.ts';
+import { VARIANT_ID } from '../variants/index.ts';
+import { VARIANT_LEVELS } from '../variants/levels.ts';
+
+// Test versions (A–E) are one 30-stage chapter on the first painting; the original keeps all 8.
+const CAMPAIGN: LevelDef[][] = VARIANT_ID === 'orig' ? ORIGINAL_CAMPAIGN : [VARIANT_LEVELS[VARIANT_ID]];
+const CHAPTER_DEFS: ChapterDef[] = VARIANT_ID === 'orig' ? ALL_CHAPTER_DEFS : ALL_CHAPTER_DEFS.slice(0, 1);
 
 export type DailyTier = 'light' | 'medium' | 'hard';
 
@@ -43,10 +49,10 @@ export function levelAt(index: number): LevelDef | undefined {
 
 /** Mechanics the player has been taught after clearing levels up to (and including) `clearedUpTo` (global index). */
 export function mechanicsKnown(clearedUpTo: number): Set<MechanicKey> {
-  const s = new Set<MechanicKey>(['drop']);
+  const s = new Set<MechanicKey>(VARIANT_ID === 'orig' ? ['drop'] : []);
   for (let i = 0; i <= clearedUpTo && i < ALL_LEVELS.length; i++) {
     const m = ALL_LEVELS[i].intro;
-    if (m) s.add(m);
+    if (m) s.add(m as MechanicKey);
   }
   return s;
 }

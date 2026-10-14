@@ -4,3 +4,5 @@ dist
 .DS_Store
 tools/e2e/out
 dist-test
+dist-lab
+dist-test-*

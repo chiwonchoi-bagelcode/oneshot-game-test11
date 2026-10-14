@@ -47,6 +47,11 @@ export function createJourneyScreen(): Screen {
   const listTitle = h('div.section-title', { html: icon('journey') }, h('span', { text: t('journey.title') }));
   const list = h('div.chapter-list');
   body.append(story, hero, dailyCard, listTitle, list);
+  // A single-chapter book (test versions) has nothing to list under the hero.
+  if (CHAPTERS.length < 2) {
+    listTitle.classList.add('hidden');
+    list.classList.add('hidden');
+  }
 
   let heroChapter = 0;
   const cards: { el: HTMLElement; art: HTMLElement; name: HTMLElement; num: HTMLElement; seals: HTMLElement; bar: HTMLElement; lock: HTMLElement; done: HTMLElement; shown: number }[] = [];

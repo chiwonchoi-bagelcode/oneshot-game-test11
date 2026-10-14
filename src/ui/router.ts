@@ -5,6 +5,7 @@
 import { h, onTap, lockInput } from './dom.ts';
 import { icon, type IconName } from './icons.ts';
 import { t, onLangChange } from '../i18n/i18n.ts';
+import { V } from '../variants/index.ts';
 
 export interface Screen {
   id: string;
@@ -24,7 +25,7 @@ const TABS: { id: string; icon: IconName; label: string }[] = [
   { id: 'daily', icon: 'daily', label: 'nav.daily' },
   { id: 'gallery', icon: 'gallery', label: 'nav.gallery' },
   { id: 'shop', icon: 'shop', label: 'nav.shop' },
-];
+].filter((tb) => tb.id !== 'daily' || V.daily) as { id: string; icon: IconName; label: string }[];
 
 const screens = new Map<string, Screen>();
 let container: HTMLElement;
