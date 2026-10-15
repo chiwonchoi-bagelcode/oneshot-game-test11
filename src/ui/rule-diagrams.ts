@@ -26,7 +26,7 @@ interface DiagramSpec {
   check?: boolean;
 }
 
-const SPECS: Record<MechanicKey, DiagramSpec> = {
+const SPECS: Record<string, DiagramSpec> = {
   drop: { boards: [{ map: ['.......', '.......', '.......'], inks: ['R'], drops: [{ x: 3, y: 1, t: 0 }] }] },
   walls: { boards: [{ map: ['..#...', '..#...', '......'], inks: ['B'], drops: [{ x: 1, y: 1, t: 0 }] }] },
   order: { queue: true, boards: [{ map: ['...#...'], inks: ['R', 'B'], drops: [{ x: 0, y: 0, t: 0 }, { x: 6, y: 0, t: 1 }] }] },
@@ -74,8 +74,42 @@ const PAD = 8;
 const GAP = 4;
 const BOARD_GAP = 10;
 
-interface CellInk { t: number; c: number; kind: 'drop' | 'spread' | 'mix' | 'seed'; range?: number }
-interface SimResult { inks: (CellInk | null)[]; touches: { t: number; a: number; b: number }[]; drops: { t: number; idx: number; inkIndex: number }[]; maxT: number; w: number; h: number; sim: Sim }
+export interface CellInk { t: number; c: number; kind: 'drop' | 'spread' | 'mix' | 'seed'; range?: number }
+interface SimResult { inks: (CellInk | CellInk[] | null)[]; touches: { t: number; a: number; b: number }[]; drops: { t: number; idx: number; inkIndex: number }[]; maxT: number; w: number; h: number; sim: Sim; outline?: string[] }
+
+/**
+ * A hand-made timeline for cores whose rules aren't the timing Sim: every cell lists the ink blobs
+ * that appear on it (t in beats of the diagram clock; later blobs draw over earlier ones).
+ */
+export interface TimelineBoard {
+  map: string[];
+  goal?: string[];
+  cells: (CellInk | CellInk[] | null)[];
+  /** Region letters per cell: thin outlines are drawn between different letters (colouring book). */
+  outline?: string[];
+}
+
+const CUSTOM = new Map<string, () => { boards: TimelineBoard[]; check?: boolean }>();
+
+/** Registers a diagram for a core-specific mechanic key (used by rule cards and the rules book). */
+export function registerDiagram(key: string, build: () => { boards: TimelineBoard[]; check?: boolean }): void {
+  CUSTOM.set(key, build);
+}
+
+function fromTimeline(b: TimelineBoard): SimResult {
+  const w = b.map[0].length, h = b.map.length;
+  const def: LevelDef = { id: 'rd', map: b.map, goal: b.goal || b.map.map((r) => '.'.repeat(r.length)), inks: [], solution: [], mud: true };
+  const sim = new Sim(def);
+  let maxT = 0;
+  b.cells.forEach((c, i) => {
+    const list = c ? (Array.isArray(c) ? c : [c]) : [];
+    for (const k of list) {
+      maxT = Math.max(maxT, k.t);
+      sim.ink[i] = k.c;
+    }
+  });
+  return { inks: b.cells, touches: [], drops: [], maxT, w, h, sim, outline: b.outline };
+}
 
 function simulate(b: BoardSpec): SimResult {
   const w = b.map[0].length, h = b.map.length;
@@ -162,10 +196,12 @@ function textColorFor(hex: string): string {
 
 /** Builds the looping mini illustration for a mechanic. */
 export function ruleDiagram(key: MechanicKey): HTMLElement {
-  const spec = SPECS[key] || SPECS.drop;
+  const custom = CUSTOM.get(key);
+  const built0 = custom ? custom() : null;
+  const spec: DiagramSpec = built0 ? { boards: [], check: built0.check } : SPECS[key] || SPECS.drop;
   const colors = inkSkin('ink-classic').colors;
   const symbols = !!store.data.settings.symbols;
-  const results = spec.boards.map(simulate);
+  const results = built0 ? built0.boards.map(fromTimeline) : spec.boards.map(simulate);
   const maxT = Math.max(...results.map((r) => r.maxT));
   const total = LEAD + maxT * BEAT + HOLD + FADE + TAIL;
   const at = (t: number) => LEAD + t * BEAT;
@@ -232,7 +268,6 @@ export function ruleDiagram(key: MechanicKey): HTMLElement {
   // Boards
   let y0 = PAD;
   results.forEach((r, bi) => {
-    const b = spec.boards[bi];
     const L = r.sim.L;
     const x0 = PAD + qW + (boardW - (r.w * s + (r.w - 1) * GAP)) / 2;
     const pos = (i: number) => {
@@ -255,8 +290,8 @@ export function ruleDiagram(key: MechanicKey): HTMLElement {
         const dot = el('rd-seed', { background: colors[L.seed[i]] });
         cell.appendChild(dot);
       }
-      const ink = r.inks[i];
-      if (ink) {
+      const cellInks = r.inks[i];
+      for (const ink of cellInks ? (Array.isArray(cellInks) ? cellInks : [cellInks]) : []) {
         const c = colors[ink.c];
         const blob = el('rd-i' + (ink.kind === 'mix' ? ' mix' : ''), { background: c, color: textColorFor(c) });
         if (ink.kind === 'drop' && ink.range !== undefined) {
@@ -273,6 +308,12 @@ export function ruleDiagram(key: MechanicKey): HTMLElement {
           anim(ring, (nm) => ringFrames(nm, at(ink.t), total));
           cell.appendChild(ring);
         }
+      }
+      if (r.outline) {
+        const reg = r.outline;
+        const x = i % r.w, y = (i - x) / r.w, me = reg[y][x];
+        const side = (dx: number, dy: number) => { const ch = reg[y + dy]?.[x + dx]; return ch !== undefined && ch !== ' ' && ch !== me; };
+        cell.style.boxShadow = [side(0, -1) ? 'inset 0 2px 0 rgba(43,39,51,.55)' : '', side(0, 1) ? 'inset 0 -2px 0 rgba(43,39,51,.55)' : '', side(-1, 0) ? 'inset 2px 0 0 rgba(43,39,51,.55)' : '', side(1, 0) ? 'inset -2px 0 0 rgba(43,39,51,.55)' : ''].filter(Boolean).join(',') || '';
       }
       if (spec.check && L.goal[i] === 8 && !r.sim.ink[i]) {
         const ck = el('rd-check');

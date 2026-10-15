@@ -26,6 +26,7 @@ import { audio } from '../audio/index.ts';
 import { buzz } from '../services/feedback.ts';
 import { t, fmt, onLangChange } from '../i18n/i18n.ts';
 import { createCore } from '../play/registry.ts';
+import { VARIANT } from '../variant.ts';
 import type { Core, CoreHost, LevelCtx, GuideSpec, BeatInfo } from '../play/core.ts';
 
 /** Hooks for the debug panel and automated tests (dev/test builds only). */
@@ -43,7 +44,7 @@ export function createPlayScreen(): Screen {
   const el = h('section.play');
   const titleB = h('b');
   const titleS = h('small');
-  const pauseBtn = iconButton(icon('pause'), () => pause(true), { label: t('play.pause') });
+  const pauseBtn = iconButton(icon('pause'), () => pause(true), { label: VARIANT.hasBeat ? t('play.pause') : t('play.menu') });
   const backBtn = iconButton(icon('back'), () => leave(), { label: t('common.back'), sound: 'back' });
   const topbar = h('header.topbar', null, backBtn, h('div.play-title', null, titleB, titleS), pauseBtn);
 
@@ -613,7 +614,7 @@ export function createPlayScreen(): Screen {
       ),
       h('p', { text: t('play.restartFree'), style: { margin: '2px 0 0', textAlign: 'center', fontSize: '13.5px', color: 'var(--ink-3)', fontWeight: '600' } }),
     );
-    pausePopup = openPopup({ id: 'pause', title: t('play.pause'), body, onClose: () => resume() });
+    pausePopup = openPopup({ id: 'pause', title: VARIANT.hasBeat ? t('play.pause') : t('play.menu'), body, onClose: () => resume() });
   }
 
   function resume() {

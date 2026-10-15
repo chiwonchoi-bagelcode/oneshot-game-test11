@@ -3,6 +3,8 @@
  * Every switch writes store.data.settings and commits 'settings' at once; main.ts applies audio
  * volumes, reduce-motion and language from there. The popup relabels itself on a language change.
  */
+import { VARIANT, IS_VARIANT } from '../variant.ts';
+import { ALL_LEVELS } from '../levels/pack.ts';
 import './meta.css';
 import './settings.css';
 import { h, onTap } from '../ui/dom.ts';
@@ -47,7 +49,7 @@ const SWITCHES: SwitchDef[] = [
   { key: 'symbols', icon: 'symbols', label: 'settings.symbols', sub: () => t('settings.symbols.sub') },
   { key: 'relaxed', icon: 'tempo', label: 'settings.relaxed', sub: () => t('settings.relaxed.sub', { n: Math.round((TEMPO.relaxedMul - 1) * 100) }) },
   { key: 'reducedMotion', icon: 'motion', label: 'settings.motion', sub: () => t('settings.motion.sub') },
-];
+].filter((d) => d.key !== 'relaxed' || VARIANT.hasBeat) as SwitchDef[];
 
 function isOn(s: Settings, k: SwitchKey): boolean {
   if (k === 'sfx' || k === 'music') return s[k] > 0;
@@ -151,10 +153,11 @@ export function openSettings(): void {
 function learnedRules(): MechanicKey[] {
   const known = mechanicsKnown(clearedUpTo());
   const order: MechanicKey[] = [];
-  for (const c of CHAPTER_DEFS) for (const m of c.teaches) if (!order.includes(m)) order.push(m);
+  if (IS_VARIANT) for (const l of ALL_LEVELS) { if (l.intro && !order.includes(l.intro)) order.push(l.intro); }
+  else for (const c of CHAPTER_DEFS) for (const m of c.teaches) if (!order.includes(m)) order.push(m);
   for (const m of known) if (!order.includes(m)) order.push(m);
   const out = order.filter((m) => known.has(m));
-  return out.length ? out : ['drop'];
+  return out.length ? out : [ALL_LEVELS[0]?.intro || 'drop'];
 }
 
 export function openRulesBook(): void {

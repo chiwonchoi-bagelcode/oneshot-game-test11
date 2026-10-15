@@ -24,6 +24,21 @@ export interface BoardOptions { ink: string; paper: string; symbols: boolean; re
 export interface GhostMark { idx: number; color: number; beat: number; order: number; state: 'upcoming' | 'now' | 'done' }
 export interface BoardLayout { x: number; y: number; w: number; h: number; cell: number }
 
+/** Drawing helpers handed to a core's overlay (css px coordinates, canvas-relative). */
+export interface OverlayApi {
+  cell: number;
+  now: number;
+  dark: boolean;
+  symbols: boolean;
+  reducedMotion: boolean;
+  rect(idx: number): { x: number; y: number; size: number };
+  center(idx: number): { x: number; y: number };
+  /** Colours of ink code c (1..7) on the current skin. */
+  color(c: number): { body: string; deep: string; ring: string; wash: string; light: string };
+  glyph(ctx: CanvasRenderingContext2D, c: number, cx: number, cy: number, size: number, stroke: string): void;
+}
+export type OverlayFn = (ctx: CanvasRenderingContext2D, api: OverlayApi) => void;
+
 const MAX_CELL = 72;
 const MAX_DPR = 2;
 const MIN_MARGIN = 8;
@@ -359,6 +374,12 @@ export class BoardRenderer {
   private win: WinState | null = null;
   private winTimer: ReturnType<typeof setTimeout> | null = null;
 
+  private overlay: OverlayFn | null = null;
+  private overlayLive = false;
+  /** Goal style: when set, only these cells show a target ring / met check; the rest show a colour wash. */
+  private ringCells: Uint8Array | null = null;
+  private ringList: number[] | null = null;
+
   private phase = 0;
   private running = false;
   private beatMs = 640;
@@ -388,6 +409,7 @@ export class BoardRenderer {
   }
 
   setSim(sim: Sim): void {
+    this.ringCells = null;
     const sameLevel = !!this.sim && this.sim.L === sim.L;
     const dimsChanged = !this.sim || this.sim.w !== sim.w || this.sim.h !== sim.h;
     this.sim = sim;
@@ -602,6 +624,46 @@ export class BoardRenderer {
     this.needsDraw = true;
   }
 
+  /**
+   * Core overlay drawn every frame over the ink (paths, wells, region outlines, forecasts…).
+   * live = the overlay animates by itself (keep frames coming).
+   */
+  setOverlay(fn: OverlayFn | null, live = false): void {
+    this.overlay = fn;
+    this.overlayLive = live && !!fn;
+    this.needsDraw = true;
+  }
+
+  /** The core changed the sim directly (no onStep/onDrop): redraw ink and preview. */
+  invalidate(): void {
+    this.cacheDirty = true;
+    this.cacheFull = true;
+    this.simSig = -1;
+    this.needsDraw = true;
+  }
+
+  /**
+   * Goal marks style. null = a ring on every target (original). A list = rings and met checks
+   * only on those cells; every other target cell shows just its colour wash (picture-style goals).
+   */
+  setGoalStyle(ringCells: number[] | null): void {
+    const same = (this.ringList === null && ringCells === null) || (!!this.ringList && !!ringCells && this.ringList.join() === ringCells.join());
+    if (same) return;
+    this.ringList = ringCells ? ringCells.slice() : null;
+    this.ringCells = null;
+    if (this.sim && this.lay.cell > 0) this.rebuildAll();
+    this.needsDraw = true;
+  }
+
+  private ringAt(i: number): boolean {
+    if (!this.ringList) return true;
+    if (!this.ringCells && this.sim) {
+      this.ringCells = new Uint8Array(this.sim.w * this.sim.h);
+      for (const c of this.ringList) if (c >= 0 && c < this.ringCells.length) this.ringCells[c] = 1;
+    }
+    return !!this.ringCells && this.ringCells[i] === 1;
+  }
+
   playWin(perfect: boolean, onDone: () => void): void {
     if (!this.sim) { onDone(); return; }
     this.cancelWin();
@@ -671,7 +733,7 @@ export class BoardRenderer {
     const previewLive = !win && !this.wrong.length && (this.tendrils.length > 0 || this.wakeHints.length > 0 || this.mixHints.length > 0);
     const ghostLive = !win && !!this.ghosts && this.ghosts.some((g) => g.state === 'now');
     const animating = this.grow.size > 0 || this.fx.length > 0 || this.parts.length > 0 || winAnim
-      || (!rm && (hasSeeds || ghostLive || (previewLive && !this.running)));
+      || (!rm && (hasSeeds || ghostLive || (previewLive && !this.running) || (this.overlayLive && !win)));
     if (!animating && !this.needsDraw && !(previewLive && this.running)) return false;
     this.needsDraw = false;
     this.draw(now, previewLive);
@@ -1277,8 +1339,13 @@ export class BoardRenderer {
       const r = this.cellRect(i), cx = r.x + s / 2, cy = r.y + s / 2;
       g.fillStyle = Pc.wash;
       g.beginPath();
-      rrect(g, r.x + s * 0.09, r.y + s * 0.09, s * 0.82, s * 0.82, s * 0.2);
+      if (this.ringList) rrect(g, r.x + s * 0.02, r.y + s * 0.02, s * 0.96, s * 0.96, s * 0.12);
+      else rrect(g, r.x + s * 0.09, r.y + s * 0.09, s * 0.82, s * 0.82, s * 0.2);
       g.fill();
+      if (!this.ringAt(i)) {
+        if (this.opts.symbols) drawGlyph(g, c, cx, cy, s * 0.22, rgba(Pc.ring, 0.55));
+        continue;
+      }
       const lw = Math.max(2, s * 0.062);
       g.strokeStyle = P.dark ? 'rgba(0,0,0,0.35)' : rgba(P.base, 0.9);
       g.lineWidth = lw + 2.2;
@@ -1720,6 +1787,12 @@ export class BoardRenderer {
 
     this.drawSeeds(ctx, now);
     if (showPreview && this.mixHints.length) this.drawMixHints(ctx, now);
+    if (this.overlay && !win) {
+      ctx.save();
+      try { this.overlay(ctx, this.overlayApi(now)); } catch (e) { console.error(e); }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
     this.drawMetMarks(ctx, now, win ? 1 - fade : 1);
     if (!win) {
       this.drawWrong(ctx);
@@ -1987,7 +2060,7 @@ export class BoardRenderer {
       return;
     }
     for (const t of sim.L.targets) {
-      if (!this.metShown[t] || sim.ink[t] !== sim.L.goal[t]) continue;
+      if (!this.metShown[t] || sim.ink[t] !== sim.L.goal[t] || !this.ringAt(t)) continue;
       const P = this.pal[sim.L.goal[t]];
       const cc = this.cellCenter(t);
       ctx.globalAlpha = alpha;
@@ -2347,6 +2420,23 @@ export class BoardRenderer {
   }
 
   // ------------------------------------------------------------------ helpers
+
+  private overlayApi(now: number): OverlayApi {
+    return {
+      cell: this.lay.cell,
+      now,
+      dark: this.paper.dark,
+      symbols: this.opts.symbols,
+      reducedMotion: this.opts.reducedMotion,
+      rect: (i) => this.cellRect(i),
+      center: (i) => this.cellCenter(i),
+      color: (c) => {
+        const P = this.pal[c] || this.pal[1];
+        return { body: P.body, deep: P.deep, ring: P.ring, wash: P.wash, light: P.light };
+      },
+      glyph: (g, c, cx, cy, size, stroke) => drawGlyph(g, c, cx, cy, size, stroke),
+    };
+  }
 
   private cellCenter(i: number): { x: number; y: number } {
     const r = this.cellRect(i);
