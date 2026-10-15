@@ -6,8 +6,11 @@ import { START } from '../config/balance.ts';
 import type { Lang } from '../i18n/i18n.ts';
 
 export const SAVE_VERSION = 1;
-const KEY = 'inkbloom.save';
-const BACKUP_KEY = 'inkbloom.save.bak';
+import { VARIANT } from '../variant.ts';
+
+// Each comparison build keeps its own slot; the original game keeps 'inkbloom.save'.
+const KEY = VARIANT.saveKey;
+const BACKUP_KEY = VARIANT.saveKey + '.bak';
 
 export interface LevelRecord {
   /** Cleared at least once. */

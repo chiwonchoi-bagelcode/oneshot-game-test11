@@ -12,6 +12,7 @@ import { mulberry32, hashString } from '../core/rng.ts';
 import { store, today, addDays } from './store.ts';
 import { clearedCount, clearedUpTo } from './progress.ts';
 import { grant } from './economy.ts';
+import { CORE } from '../variant.ts';
 
 export type DailyTierIndex = 0 | 1 | 2;
 
@@ -116,7 +117,8 @@ function reskin(def: LevelDef, day: string, tier: number): LevelDef {
     perm[j] = tmp;
   }
   const flipX = rnd() < 0.5, flipY = rnd() < 0.5;
-  const out = transformLevel(def, { flipX, flipY, perm }, 'daily-' + day + '-' + tier);
+  // Colouring-book pictures keep their real colours (a blue sun would just look wrong).
+  const out = transformLevel(def, { flipX, flipY, perm: CORE === 'c' ? undefined : perm }, 'daily-' + day + '-' + tier);
   // A daily is never a lesson: no intro card, no guided steps.
   delete out.intro;
   delete out.guided;

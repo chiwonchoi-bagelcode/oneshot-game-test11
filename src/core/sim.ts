@@ -37,11 +37,21 @@ export function isPrimary(c: number): boolean {
   return c === R || c === Y || c === B;
 }
 
-export type MechanicKey =
+/** Original-core mechanics; the comparison cores add their own keys (plain strings). */
+export type OrigMechanic =
   | 'drop' | 'walls' | 'order' | 'mix' | 'timing' | 'parity' | 'three'
   | 'range' | 'white' | 'seed' | 'gate' | 'slow';
+export type MechanicKey = OrigMechanic | (string & {});
 
-export interface Drop { x: number; y: number; t: number }
+/**
+ * A move of a solution. t = beat (timing cores; 0 elsewhere).
+ * k = index of the ink used (tray ink, well…) when the core lets the player choose; c = colour bit
+ * for cores where a move is "pour colour c here" (colouring book).
+ */
+export interface Drop { x: number; y: number; t: number; k?: number; c?: number }
+
+/** A fixed ink well (core D): the only cells that can release ink. */
+export interface Well { x: number; y: number; ink: string }
 
 export interface LevelDef {
   id: string;
@@ -64,6 +74,16 @@ export interface LevelDef {
   tag?: 'light' | 'think' | 'discovery' | 'boss';
   /** Analyzer difficulty score 0..100 (informational). */
   diff?: number;
+  /** Core D: ink wells (the only places ink can be released). */
+  wells?: Well[];
+  /** Core C: picture regions, one letter per cell (same letter = same region; '.' none). */
+  regions?: string[];
+  /** Core B: solution strokes, each a list of cells starting at its source. */
+  strokes?: { x: number; y: number }[][];
+  /** Allows 'K' (all three colours) as a goal colour (core C: brown). */
+  mud?: boolean;
+  /** Short coach line shown at the start (i18n key). */
+  coach?: string;
 }
 
 export interface InkSpec { c: number; range: number }
@@ -119,7 +139,7 @@ export function parseLevel(def: LevelDef): ParsedLevel {
       if (g === '.') continue;
       if (g === 'w') { whites.push(i); goal[i] = WHITE; continue; }
       const code = CHAR_TO_CODE[g];
-      if (!code || code === K) throw new Error(def.id + ': unknown goal char "' + g + '"');
+      if (!code || (code === K && !def.mud)) throw new Error(def.id + ': unknown goal char "' + g + '"');
       if (wall[i]) throw new Error(def.id + ': goal on a wall');
       goal[i] = code;
       targets.push(i);
@@ -220,15 +240,20 @@ export class Sim {
 
   canDrop(idx: number): boolean { return this.dropBlock(idx) === null; }
 
-  drop(idx: number): boolean {
+  /**
+   * Drops the next queued ink at idx. A core that lets the player pick the ink (wells) passes
+   * `spec` (and its index `k`); the queue position still advances so inksLeft() counts drops.
+   */
+  drop(idx: number, spec?: InkSpec, k?: number): boolean {
     if (!this.canDrop(idx)) return false;
-    const ink = this.L.inks[this.pi++];
+    const ink = spec || this.L.inks[this.pi];
+    this.pi++;
     this.ink[idx] = ink.c;
     this.born[idx] = this.tick;
     this.from[idx] = -1;
     this.src[idx] = SRC_DROP;
     const x = idx % this.w;
-    this.drops.push({ x, y: (idx - x) / this.w, t: this.tick });
+    this.drops.push(k === undefined ? { x, y: (idx - x) / this.w, t: this.tick } : { x, y: (idx - x) / this.w, t: this.tick, k });
     const f: Front = { idx, d: 0, wait: this.L.slow[idx] ? 1 : 0 };
     if (f.wait || this.canGrow(f, ink.c, ink.range)) this.waves.push({ c: ink.c, range: ink.range, front: [f] });
     this.lastEvents = [{ type: 'drop', idx, c: ink.c }];

@@ -14,9 +14,10 @@ let playwright;
 try { playwright = require('playwright'); } catch { playwright = require('/opt/node22/lib/node_modules/playwright'); }
 const { chromium } = playwright;
 
-const OUT = new URL('./out/', import.meta.url).pathname;
+const OUT = new URL('./out/' + (process.env.CORE || 'orig') + '/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
-const PORT = 5199;
+const CORE = process.env.CORE || 'orig';
+const PORT = 5199 + ['orig', 'a', 'b', 'c', 'd', 'e'].indexOf(CORE);
 const BASE = `http://localhost:${PORT}/`;
 const args = process.argv.slice(2);
 const want = (s) => !args.length || args.includes(s);
@@ -28,9 +29,9 @@ async function startServer() {
   // Static test build (debug hooks on) so file changes can't reload the page mid-test.
   if (!process.env.E2E_NO_BUILD) {
     const { execSync } = await import('node:child_process');
-    execSync('npx vite build --outDir dist-test --emptyOutDir', { cwd: root, stdio: 'ignore', env: { ...process.env, VITE_DEBUG: '1' } });
+    execSync(`npx vite build --outDir dist-test-${CORE} --emptyOutDir`, { cwd: root, stdio: 'ignore', env: { ...process.env, VITE_DEBUG: '1', VITE_CORE: CORE === 'orig' ? '' : CORE } });
   }
-  const p = spawn('npx', ['vite', 'preview', '--outDir', 'dist-test', '--port', String(PORT), '--strictPort'], { cwd: root, stdio: ['ignore', 'ignore', 'ignore'], detached: true });
+  const p = spawn('npx', ['vite', 'preview', '--outDir', `dist-test-${CORE}`, '--port', String(PORT), '--strictPort'], { cwd: root, stdio: ['ignore', 'ignore', 'ignore'], detached: true });
   for (let i = 0; i < 60; i++) {
     try { const r = await fetch(BASE); if (r.ok) return p; } catch {}
     await sleep(500);
@@ -226,14 +227,15 @@ async function playthrough(browser) {
       await sleep(450);
     }
     const info = await page.evaluate(() => window.__ink.info());
+    const centers = await page.evaluate((sol) => sol.map((d) => window.__ink.cellCenter(d.y * window.__ink.info().w + d.x)), info.solution);
     const t0 = Date.now();
-    for (const d of info.solution) {
+    for (const [di, d] of info.solution.entries()) {
       // wait for the beat
       await page.waitForFunction((t) => window.__ink.state().tick >= t, d.t, { timeout: 20000 });
       const st = await page.evaluate(() => window.__ink.state());
       if (st.tick > d.t) log(`  L${i + 1}: missed beat ${d.t} (now ${st.tick})`);
       if (d.t > 0) await sleep(170); // human reaction after the beat changes
-      const p = await page.evaluate((i) => window.__ink.cellCenter(i), d.y * info.w + d.x);
+      const p = centers[di];
       await page.touchscreen.tap(p.x, p.y);
       await sleep(40);
     }
@@ -446,7 +448,7 @@ async function doubletap(browser) {
 
 // ----------------------------------------------------------------
 const server = await startServer();
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.PW_CHANNEL === 'none' ? {} : { channel: process.env.PW_CHANNEL || 'chrome' });
 try {
   if (want('firstrun')) await firstrun(browser);
   if (args.includes('playthrough')) await playthrough(browser);

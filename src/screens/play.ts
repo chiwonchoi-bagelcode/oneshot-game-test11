@@ -1,23 +1,18 @@
 /*
- * Play screen: the beat clock, input, hints/rewinds, and the win/fail flow.
- *
- * Timing model (keeps failures about judgement, not reflexes):
- *  - The clock doesn't run until the first drop. Drops made in quick succession before the first
- *    beat all count as beat 0 (each drop restarts the count-in).
- *  - A tap up to TEMPO.graceMs after a beat still counts for the previous beat (touch latency).
- *  - A cell that breaks the goal is shown immediately (with the exact reason), and Retry is one tap.
+ * Play screen shell: top bar, coach line, beat pill, board canvas, tray, boosters, pause, intro
+ * cards, fail/result sheets and the reward flow. The rules of the game live in a *core*
+ * (src/play/core.ts) chosen by the build variant — the original timing puzzle or one of the
+ * comparison cores — so every version shares exactly the same screen, art and rewards.
  */
 import './play.css';
-import { Sim, parseLevel, isPrimary, WHITE, type LevelDef, type ParsedLevel, type SimEvent } from '../core/sim.ts';
-import { BoardRenderer, type GhostMark } from '../render/board.ts';
-import { glyphSVG } from '../render/glyphs.ts';
-import { inkSkin, paperSkin, inkForPaper } from '../render/skins.ts';
+import { parseLevel } from '../core/sim.ts';
+import { BoardRenderer } from '../render/board.ts';
 import { paintingSVG, revealRegion, PAINTING_REGIONS } from '../render/paintings.ts';
 import { h, onTap, iconButton, button, countUp, lockInput } from '../ui/dom.ts';
 import { icon } from '../ui/icons.ts';
 import { openPopup, closeAllPopups, anyPopupOpen, type PopupHandle } from '../ui/popup.ts';
 import { showReward } from '../ui/reward.ts';
-import { go, back as routerBack, type Screen } from '../ui/router.ts';
+import { go, type Screen } from '../ui/router.ts';
 import { openSettingsPopup } from '../ui/topbar.ts';
 import { ruleDiagram } from '../ui/rule-diagrams.ts';
 import { store } from '../state/store.ts';
@@ -25,27 +20,15 @@ import { grant, spendCoins, useItem } from '../state/economy.ts';
 import { recordClear, recordFail, chapterStats, clearedCount, type ClearResult } from '../state/progress.ts';
 import { todaySet, recordDailyClear, type DailyClearResult } from '../state/daily.ts';
 import { levelInfo, levelAt, CHAPTERS, ALL_LEVELS } from '../levels/pack.ts';
-import { TEMPO, PRICES, LEVEL_REWARD, DAILY, ADS } from '../config/balance.ts';
+import { PRICES, LEVEL_REWARD, DAILY, ADS } from '../config/balance.ts';
 import { adsLeft, showRewardedAd } from '../services/ads.ts';
 import { audio } from '../audio/index.ts';
 import { buzz } from '../services/feedback.ts';
 import { t, fmt, onLangChange } from '../i18n/i18n.ts';
+import { createCore } from '../play/registry.ts';
+import type { Core, CoreHost, LevelCtx, GuideSpec, BeatInfo } from '../play/core.ts';
 
-type Phase = 'idle' | 'prestart' | 'running' | 'frozen' | 'rewound' | 'paused' | 'won' | 'lost';
-type FailKind = 'needMix' | 'noMix' | 'otherFirst' | 'otherMix' | 'white' | 'mud' | 'unreached';
-
-interface LevelCtx {
-  mode: 'campaign' | 'daily';
-  def: LevelDef;
-  L: ParsedLevel;
-  /** Campaign: global index; daily: tier. */
-  index: number;
-  chapter: number;
-  number: number;
-  guided: boolean;
-}
-
-/** Hooks for the debug panel and automated tests (dev builds only). */
+/** Hooks for the debug panel and automated tests (dev/test builds only). */
 export const debugHooks: {
   autoplay: (on: boolean) => void;
   state: () => any;
@@ -54,8 +37,6 @@ export const debugHooks: {
   cellCenter: (idx: number) => { x: number; y: number };
   info: () => any;
 } = { autoplay: () => {}, state: () => null, solveNow: () => {}, setTimeScale: () => {}, cellCenter: () => ({ x: 0, y: 0 }), info: () => null };
-
-const DROP_PATH = 'M20 2C20 2 5 18.5 5 28.5a15 15 0 0 0 30 0C35 18.5 20 2 20 2z';
 
 export function createPlayScreen(): Screen {
   // ---------- DOM ----------
@@ -85,47 +66,30 @@ export function createPlayScreen(): Screen {
   const bubble = h('div.pointer-bubble.hidden');
   const boardWrap = h('div.board-wrap', null, canvas, pointer, bubble);
 
-  const queue = h('div.queue', { 'aria-label': t('play.inks') });
+  const tray = h('div.queue', { 'aria-label': t('play.inks') });
 
   const hintCount = h('i.count');
-  const rewindCount = h('i.count');
+  const undoCount = h('i.count');
   const hintBtn = iconButton(icon('hint'), () => onHint(), { label: t('play.hint') });
   hintBtn.appendChild(hintCount);
-  const rewindBtn = iconButton(icon('rewind'), () => onRewind(), { label: t('play.rewind') });
-  rewindBtn.appendChild(rewindCount);
-  const restartBtn = iconButton(icon('restart'), () => restart(), { label: t('play.retry'), cls: 'mono' });
+  const undoBtn = iconButton(icon('rewind'), () => onUndo(), { label: t('play.rewind') });
+  undoBtn.appendChild(undoCount);
+  const restartBtn = iconButton(icon('restart'), () => restartAttempt(true), { label: t('play.retry'), cls: 'mono' });
   const boHint = h('div.booster', null, hintBtn, h('span', { text: t('play.hint') }));
-  const boRewind = h('div.booster', null, rewindBtn, h('span', { text: t('play.rewind') }));
+  const boUndo = h('div.booster', null, undoBtn, h('span', { text: t('play.rewind') }));
   const boRestart = h('div.booster', null, restartBtn, h('span', { text: t('play.retry') }));
-  const boosters = h('div.boosters', null, boRestart, boRewind, boHint);
-
-  const resumeText = h('div.grow', { text: t('play.resumeTap') });
-  const resumeBar = h('div.resume-bar', null, resumeText, button(t('play.resume'), () => resumeFromRewind(), { variant: 'jade', size: 'sm', icon: icon('play') }));
+  const boosters = h('div.boosters', null, boRestart, boUndo, boHint);
 
   const sheet = h('div.sheet');
 
-  el.append(topbar, beatRow, boardWrap, queue, boosters, resumeBar, sheet);
+  el.append(topbar, beatRow, boardWrap, tray, boosters, sheet);
 
   // ---------- State ----------
   const renderer = new BoardRenderer(canvas, boardOpts());
   let ctx: LevelCtx | null = null;
-  let sim: Sim | null = null;
-  let phase: Phase = 'idle';
-  let pausedFrom: Phase = 'idle';
-  let beatMs = TEMPO.beatMs;
-  let nextBeatAt = 0;
-  let lastStepAt = -1e9;
-  let preStep: Sim | null = null;
-  let lastEvents: SimEvent[] = [];
-  let rewindStack: Sim[] = [];
+  let shellPhase: 'play' | 'won' | 'lost' = 'play';
   let clean = true; // seal eligibility for this attempt
-  let attemptDirty = false; // at least one drop made in this attempt
-  let hintOn = false;
-  let hintBroken = false;
-  let decided: 'win' | null = null;
-  let fastForward = false;
-  let pendingFail: { at: number; cells: number[] } | null = null;
-  let met = new Set<number>();
+  let attemptDirty = false; // at least one move made in this attempt
   let raf = 0;
   let coachTimer = 0;
   let visible = false;
@@ -133,6 +97,50 @@ export function createPlayScreen(): Screen {
   let resultShown = false;
   let timeScale = 1; // debug only
   let lastDraw = 0;
+  let autoplay = false;
+  let guideSpec: GuideSpec | null = null;
+  let guideT0 = 0;
+  let pointerId = -1;
+
+  const host: CoreHost = {
+    renderer,
+    screen: el,
+    canvas,
+    boardWrap,
+    tray,
+    ctx: () => ctx!,
+    say,
+    hush,
+    kick,
+    guide(g) {
+      guideSpec = g;
+      guideT0 = performance.now();
+      placePointer();
+    },
+    beat: setBeatPill,
+    pulseBeat,
+    dirty() {
+      attemptDirty = true;
+    },
+    voidSeal() {
+      clean = false;
+    },
+    win,
+    fail,
+    refreshBoosters: updateBoosters,
+    timeScale: () => timeScale,
+  };
+  const core: Core = createCore(host);
+  const undoKind = core.boosters.undo;
+  boUndo.classList.toggle('hidden', !undoKind);
+  boHint.classList.toggle('hidden', !core.boosters.hint);
+  if (undoKind === 'undo') {
+    undoBtn.innerHTML = icon('undo');
+    undoBtn.classList.add('mono');
+    undoBtn.setAttribute('aria-label', t('play.undo'));
+  }
+  const undoLabel = () => (undoKind === 'undo' ? t('play.undo') : t('play.rewind'));
+  boUndo.querySelector('span')!.textContent = undoLabel();
 
   function boardOpts() {
     const s = store.data;
@@ -141,15 +149,12 @@ export function createPlayScreen(): Screen {
 
   store.on('cosmetics', () => {
     renderer.setOptions(boardOpts());
-    if (ctx) renderQueue();
+    if (ctx) core.relayout();
     kick();
   });
   store.on('settings', () => {
     renderer.setOptions(boardOpts());
-    if (ctx) {
-      renderQueue();
-      beatMs = computeBeatMs(ctx);
-    }
+    if (ctx) core.relayout();
     kick();
   });
   store.on('wallet', updateBoosters);
@@ -157,9 +162,9 @@ export function createPlayScreen(): Screen {
     if (ctx) setTitle();
     beatEl.querySelector('.lbl')!.textContent = t('play.beat');
     boHint.querySelector('span')!.textContent = t('play.hint');
-    boRewind.querySelector('span')!.textContent = t('play.rewind');
+    boUndo.querySelector('span')!.textContent = undoLabel();
     boRestart.querySelector('span')!.textContent = t('play.retry');
-    resumeText.textContent = t('play.resumeTap');
+    placePointer();
   });
 
   // ---------- Layout ----------
@@ -174,11 +179,6 @@ export function createPlayScreen(): Screen {
   }
 
   // ---------- Level setup ----------
-  function computeBeatMs(c: LevelCtx): number {
-    const base = c.def.tempo ?? (c.mode === 'campaign' && c.chapter === 0 && c.number <= 20 ? TEMPO.tutorialBeatMs : TEMPO.beatMs);
-    return Math.round((base * (store.data.settings.relaxed ? TEMPO.relaxedMul : 1)) / timeScale);
-  }
-
   function setTitle() {
     if (!ctx) return;
     if (ctx.mode === 'daily') {
@@ -192,51 +192,32 @@ export function createPlayScreen(): Screen {
 
   function openLevel(c: LevelCtx) {
     ctx = c;
-    hintOn = c.guided || !!(c.mode === 'campaign' && store.data.hinted[c.def.id] && store.data.seen['hint.' + c.def.id]);
     clean = true;
-    beatMs = computeBeatMs(c);
     setTitle();
-    resetAttempt();
+    restartAttempt(false);
     audio.setMusic('play', c.chapter);
     // First visit cards: new chapter, new rule.
     queueIntroCards();
   }
 
-  function resetAttempt() {
+  /** Fresh attempt of the current level. countRetry: an explicit restart (voids the seal if moves were made). */
+  function restartAttempt(countRetry: boolean) {
     if (!ctx) return;
-    stopClock();
-    sim = new Sim(ctx.L);
-    phase = 'idle';
-    preStep = null;
-    lastEvents = [];
-    rewindStack = [];
+    if (countRetry && attemptDirty) {
+      clean = false;
+      if (ctx.mode === 'campaign' && shellPhase !== 'lost') recordFail(ctx.def.id);
+    }
     attemptDirty = false;
-    hintBroken = false;
-    decided = null;
-    fastForward = false;
-    pendingFail = null;
+    shellPhase = 'play';
     resultShown = false;
-    met = new Set();
-    renderer.setSim(sim);
     closeSheet();
-    resumeBar.classList.remove('open');
     boardWrap.style.transform = '';
-    renderQueue();
-    updateBeat(0, false);
+    guideSpec = null;
+    core.start();
+    if (!ctx.guided && store.data.hinted[ctx.def.id] && store.data.seen['hint.' + ctx.def.id]) core.showHint(true);
     updateBoosters();
-    updateGhosts();
     layout();
     kick();
-  }
-
-  function restart() {
-    if (!ctx) return;
-    if (attemptDirty) {
-      clean = false;
-      if (ctx.mode === 'campaign' && phase !== 'lost') recordFail(ctx.def.id);
-    }
-    audio.beatStop();
-    resetAttempt();
   }
 
   function queueIntroCards() {
@@ -247,10 +228,11 @@ export function createPlayScreen(): Screen {
       steps.push(() => chapterCard(ctx!.chapter, false));
     }
     const m = ctx.def.intro;
-    if (m && m !== 'drop' && !store.data.seen['mech.' + m]) steps.push(() => ruleCard(m));
+    if (m && ctx.number > 1 && !store.data.seen['mech.' + m]) steps.push(() => ruleCard(m));
     if (!steps.length) return;
     (async () => {
       for (const s of steps) await s();
+      placePointer();
       kick();
     })();
   }
@@ -293,39 +275,7 @@ export function createPlayScreen(): Screen {
     return p.closed;
   }
 
-  // ---------- Queue & boosters ----------
-  function renderQueue() {
-    if (!sim || !ctx) return;
-    queue.innerHTML = '';
-    const cols = inkForPaper(inkSkin(store.data.cosmetics.ink), paperSkin(store.data.cosmetics.paper));
-    ctx.L.inks.forEach((ink, i) => {
-      const hasR = ink.range !== Infinity;
-      const chip = h('div.ink-chip' + (hasR ? '.has-rng' : ''), {
-        html: `<svg class="dropshape" viewBox="0 0 40 46"><path d="${DROP_PATH}" transform="translate(0 2)" fill="${cols[ink.c]}" stroke="rgba(0,0,0,.18)" stroke-width="1.5"/><path d="M13 27a7 7 0 0 1 4-7" stroke="rgba(255,255,255,.55)" stroke-width="3" fill="none" stroke-linecap="round"/></svg>`,
-      });
-      if (store.data.settings.symbols) chip.appendChild(h('div.gly', { html: glyphSVG(ink.c, 18) }));
-      if (hasR) chip.appendChild(h('div.rng', { text: String(ink.range) }));
-      chip.setAttribute('aria-label', t('color.' + ink.c) + (hasR ? ' ' + ink.range : ''));
-      queue.appendChild(chip);
-    });
-    updateQueue();
-  }
-
-  function updateQueue(popIndex = -1) {
-    if (!sim) return;
-    const chips = queue.children;
-    for (let i = 0; i < chips.length; i++) {
-      const c = chips[i] as HTMLElement;
-      c.classList.toggle('used', i < sim.pi);
-      c.classList.toggle('next', i === sim.pi);
-      if (i === popIndex) {
-        c.classList.remove('pop');
-        void c.offsetWidth;
-        c.classList.add('pop');
-      }
-    }
-  }
-
+  // ---------- Boosters ----------
   function updateBoosters() {
     const d = store.data;
     sheet.querySelectorAll<HTMLElement>('[data-live]').forEach((el) => {
@@ -333,21 +283,25 @@ export function createPlayScreen(): Screen {
       el.textContent = n > 0 ? fmt(n) : '+';
       el.classList.toggle('plus', !(n > 0));
     });
-    hintCount.textContent = ctx && (ctx.guided || (ctx.mode === 'campaign' && d.hinted[ctx.def.id])) ? '' : d.hints > 0 ? fmt(d.hints) : '+';
+    hintCount.textContent = ctx && (ctx.guided || d.hinted[ctx.def.id]) ? '' : d.hints > 0 ? fmt(d.hints) : '+';
     hintCount.classList.toggle('plus', !(d.hints > 0));
     hintCount.style.display = hintCount.textContent ? '' : 'none';
-    rewindCount.textContent = d.rewinds > 0 ? fmt(d.rewinds) : '+';
-    rewindCount.classList.toggle('plus', !(d.rewinds > 0));
-    boRewind.classList.toggle('off', !sim || sim.drops.length === 0 || phase === 'won');
-    boHint.classList.toggle('off', !ctx || ctx.guided || phase === 'won' || (hintOn && !hintBroken));
+    if (undoKind === 'rewind') {
+      undoCount.textContent = d.rewinds > 0 ? fmt(d.rewinds) : '+';
+      undoCount.classList.toggle('plus', !(d.rewinds > 0));
+    } else undoCount.style.display = 'none';
+    boUndo.classList.toggle('off', !ctx || !core.canUndo() || shellPhase === 'won');
+    boHint.classList.toggle('off', !ctx || ctx.guided || shellPhase === 'won' || core.hintShowing());
   }
 
-  // ---------- Beat UI ----------
-  function updateBeat(frac: number, running: boolean) {
-    if (!sim) return;
-    beatNum.textContent = String(sim.tick);
-    beatEl.classList.toggle('idle', phase === 'idle');
-    ringFg.setAttribute('stroke-dashoffset', String(RING_LEN * (1 - (running ? Math.max(0, Math.min(1, frac)) : 0))));
+  // ---------- Beat pill & coach ----------
+  function setBeatPill(b: BeatInfo | null) {
+    beatEl.classList.toggle('hidden', !b);
+    if (!b) return;
+    const txt = String(b.tick);
+    if (beatNum.textContent !== txt) beatNum.textContent = txt;
+    beatEl.classList.toggle('idle', b.idle);
+    ringFg.setAttribute('stroke-dashoffset', String(RING_LEN * (1 - (b.running ? b.frac : 0))));
   }
 
   function pulseBeat() {
@@ -368,349 +322,132 @@ export function createPlayScreen(): Screen {
     coach.classList.remove('show');
   }
 
-  // ---------- Hints / guided ghosts ----------
-  function solutionMatchesSoFar(): boolean {
-    if (!sim || !ctx) return false;
-    const sol = ctx.def.solution;
-    for (let i = 0; i < sim.drops.length; i++) {
-      const d = sim.drops[i], s = sol[i];
-      if (!s || d.x !== s.x || d.y !== s.y || d.t !== s.t) return false;
-    }
-    return true;
-  }
-
-  function nextGhost() {
-    if (!sim || !ctx || !hintOn || hintBroken) return null;
-    const s = ctx.def.solution[sim.drops.length];
-    return s || null;
-  }
-
-  function updateGhosts() {
-    if (!sim || !ctx) return;
-    if (!hintOn || hintBroken) {
-      renderer.setGhosts(null);
-      placePointer();
-      return;
-    }
-    const placed = sim.drops.length;
-    const marks: GhostMark[] = ctx.def.solution.map((d, i) => {
-      const due = d.t <= sim!.tick || (phase === 'idle' || phase === 'prestart' ? d.t === 0 : false);
-      return {
-        idx: sim!.idx(d.x, d.y),
-        color: ctx!.L.inks[i].c,
-        beat: d.t,
-        order: i + 1,
-        state: i < placed ? 'done' : i === placed && due ? 'now' : 'upcoming',
-      };
-    });
-    renderer.setGhosts(marks);
-    placePointer();
-  }
-
+  // ---------- Guide (hand + bubble) ----------
   function placePointer() {
-    const g = nextGhost();
-    if (!g || !sim || phase === 'won' || phase === 'lost' || anyPopupOpen()) {
+    const g = guideSpec;
+    if (!g || !ctx || shellPhase !== 'play' || anyPopupOpen()) {
       pointer.classList.add('hidden');
       bubble.classList.add('hidden');
       return;
     }
-    const idx = sim.idx(g.x, g.y);
-    const r = renderer.cellRect(idx);
+    const r = renderer.cellRect(g.idx);
     if (!r || !r.size) return;
-    const cx = r.x + r.size / 2, cy = r.y + r.size / 2;
-    const due = g.t <= sim.tick || ((phase === 'idle' || phase === 'prestart') && g.t === 0);
-    pointer.classList.toggle('hidden', !(due && (ctx!.guided || phase === 'idle')));
+    let cx = r.x + r.size / 2, cy = r.y + r.size / 2;
+    if (g.path && g.path.length > 1) {
+      // Drag demo: the hand glides along the path, pauses, and starts over.
+      const per = 380, n = g.path.length, total = n * per + 900;
+      const k = ((performance.now() - guideT0) % total) / per;
+      const i = Math.min(n - 1, Math.floor(k)), f = Math.min(1, k - i);
+      const a = renderer.cellRect(g.path[i]), b = renderer.cellRect(g.path[Math.min(n - 1, i + 1)]);
+      cx = a.x + a.size / 2 + (b.x - a.x) * f;
+      cy = a.y + a.size / 2 + (b.y - a.y) * f;
+    }
+    pointer.classList.toggle('hidden', !g.hand);
     pointer.style.left = cx - 26 + 'px';
     pointer.style.top = cy + r.size * 0.18 - 6 + 'px';
-    const text = due ? (g.t > 0 ? t('play.now') : t('play.tapHere')) : t('play.waitBeat', { n: g.t });
-    if (bubble.textContent !== text) bubble.textContent = text;
-    bubble.classList.remove('hidden');
-    bubble.classList.toggle('now', due && g.t > 0);
+    if (bubble.textContent !== g.text) bubble.textContent = g.text;
+    bubble.classList.toggle('hidden', !g.text);
+    bubble.classList.toggle('now', !!g.now);
     const bw = bubble.offsetWidth || 120;
     const W = boardWrap.clientWidth;
-    bubble.style.left = Math.max(6, Math.min(W - bw - 6, cx - bw / 2)) + 'px';
+    const bx = r.x + r.size / 2;
+    bubble.style.left = Math.max(6, Math.min(W - bw - 6, bx - bw / 2)) + 'px';
     bubble.style.top = Math.max(2, r.y - 46) + 'px';
   }
 
   // ---------- Input ----------
+  function cellOf(e: PointerEvent): { idx: number; x: number; y: number } {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    return { idx: renderer.cellAt(x, y), x, y };
+  }
   canvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     audio.unlock();
-    if (!sim || !ctx || anyPopupOpen()) return;
-    if (phase === 'won' || phase === 'lost' || phase === 'paused' || decided) return;
-    const rect = canvas.getBoundingClientRect();
-    const idx = renderer.cellAt(e.clientX - rect.left, e.clientY - rect.top);
-    if (idx < 0) return;
-    tryDrop(idx, performance.now());
-  });
-
-  function tryDrop(idx: number, now: number, noGrace = false) {
-    if (!sim || !ctx) return;
-    // Grace window: a tap right after a beat counts for the previous beat.
-    if (!noGrace && phase === 'running' && preStep && now - lastStepAt < TEMPO.graceMs && !fastForward && preStep.canDrop(idx)) {
-      graceDrop(idx, now);
-      return;
-    }
-    const block = sim.dropBlock(idx);
-    if (block) {
-      renderer.onReject(idx, block);
-      audio.reject();
-      buzz('light');
-      if (block === 'white') say(t('play.reject.white'));
-      else if (block === 'inked') say(t('play.reject.inked'));
-      else if (block === 'noink') say(t('play.reject.noink'));
-      else say(t('play.reject.blocked'));
-      kick();
-      return;
-    }
-    rewindStack.push(sim.clone());
-    const c = sim.nextInk()!.c;
-    const before = sim.pi;
-    sim.drop(idx);
-    afterDrop(idx, c, before, now);
-  }
-
-  function afterDrop(idx: number, c: number, chipIndex: number, now: number) {
-    if (!sim || !ctx) return;
-    attemptDirty = true;
-    store.data.stats.drops++;
-    renderer.onDrop(idx, c);
-    audio.drop(c);
-    buzz('light');
-    updateQueue(chipIndex);
-    hush();
-    if (hintOn && !hintBroken && !solutionMatchesSoFar()) {
-      hintBroken = true;
-      say(t('play.hintOff'), 2600);
-    }
-    if (phase === 'idle' || phase === 'prestart') {
-      phase = 'prestart';
-      nextBeatAt = now + beatMs;
-      audio.beatStart(beatMs, nextBeatAt);
-    } else if (phase === 'frozen' || phase === 'rewound') {
-      phase = 'running';
-      nextBeatAt = now + beatMs;
-      audio.beatStart(beatMs, nextBeatAt);
-      resumeBar.classList.remove('open');
-    }
-    evaluate(now);
-    updateGhosts();
-    updateBoosters();
+    if (!ctx || anyPopupOpen() || shellPhase !== 'play' || core.locked()) return;
+    pointerId = e.pointerId;
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* */ }
+    const p = cellOf(e);
+    core.down(p.idx, p.x, p.y, performance.now());
+    placePointer();
     kick();
-  }
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== pointerId || !ctx || shellPhase !== 'play') return;
+    const p = cellOf(e);
+    core.move(p.idx, p.x, p.y, performance.now());
+    kick();
+  });
+  const endPointer = (e: PointerEvent) => {
+    if (e.pointerId !== pointerId) return;
+    pointerId = -1;
+    if (!ctx || shellPhase !== 'play') return;
+    const p = cellOf(e);
+    core.up(p.idx, p.x, p.y, performance.now());
+    placePointer();
+    kick();
+  };
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
 
-  function graceDrop(idx: number, now: number) {
-    if (!sim || !preStep) return;
-    const old = lastEvents;
-    const s = preStep;
-    rewindStack.push(s.clone());
-    const c = s.nextInk()!.c;
-    const chip = s.pi;
-    s.drop(idx);
-    preStep = s.clone();
-    const ev = s.step();
-    sim = s;
-    lastEvents = ev;
-    renderer.replaceSim(sim);
-    const seen = new Set(old.map((e) => e.type + ':' + ('idx' in e ? e.idx + ':' + e.c : e.a + '-' + e.b)));
-    const fresh = ev.filter((e) => !seen.has(e.type + ':' + ('idx' in e ? e.idx + ':' + e.c : e.a + '-' + e.b)));
-    renderer.onStep(fresh);
-    pendingFail = null;
-    met = new Set(ctx!.L.targets.filter((i) => s.ink[i] === ctx!.L.goal[i]));
-    afterDrop(idx, c, chip, now);
-    checkTargets();
-  }
-
-  // ---------- Clock ----------
+  // ---------- Frame loop ----------
   function kick() {
     if (!raf && visible) raf = requestAnimationFrame(frame);
   }
 
-  function stopClock() {
-    audio.beatStop();
-  }
-
   function frame(now: number) {
     raf = 0;
-    if (!visible) return;
-    if (autoplay) autoplayTick(now);
-    if (sim && ctx) {
-      const interval = fastForward ? beatMs / TEMPO.fastForwardMul : beatMs;
-      if (phase === 'prestart') {
-        const g = ctx.guided ? nextGhost() : null;
-        if (g && g.t === 0) nextBeatAt = now + beatMs; // guided: wait for every beat-0 drop
-        else if (now >= nextBeatAt) {
-          phase = 'running';
-          doStep(now);
-          nextBeatAt = now + interval;
-        }
-      } else if (phase === 'running') {
-        if (now >= nextBeatAt) {
-          doStep(now);
-          nextBeatAt = Math.max(nextBeatAt + interval, now + interval * 0.5);
-        }
-      }
-      if (pendingFail && now >= pendingFail.at) {
-        const cells = pendingFail.cells;
-        pendingFail = null;
-        fail(cells);
-      }
-      const running = phase === 'running' || phase === 'prestart';
-      // While the clock is stopped only gentle ambient motion remains: draw it at ~30 fps to save battery.
-      if (!running && !pendingFail && now - lastDraw < 31 && lastDraw > 0) {
-        kick();
-        return;
-      }
-      lastDraw = now;
-      const frac = running ? 1 - (nextBeatAt - now) / interval : 0;
-      renderer.setBeat(Math.max(0, Math.min(1, frac)), phase === 'running');
-      updateBeat(frac, running);
-      const animating = renderer.render(now);
-      if (animating || running || pendingFail) kick();
-      else lastDraw = 0;
-    }
-  }
-
-  function doStep(now: number) {
-    if (!sim || !ctx) return;
-    preStep = sim.clone();
-    const ev = sim.step();
-    lastEvents = ev;
-    lastStepAt = now;
-    renderer.onStep(ev);
-    pulseBeat();
-    const fills: number[] = [], mixes: number[] = [], seeds: number[] = [];
-    let touches = 0;
-    for (const e of ev) {
-      if (e.type === 'fill') { if (!fills.includes(e.c)) fills.push(e.c); }
-      else if (e.type === 'mix') { if (!mixes.includes(e.c)) mixes.push(e.c); }
-      else if (e.type === 'seed') seeds.push(e.c);
-      else if (e.type === 'touch') touches++;
-    }
-    if (mixes.length) buzz('medium');
-    const prog = ctx.L.targets.length ? sim.metCount() / ctx.L.targets.length : 1;
-    audio.beat({ tick: sim.tick, fills, mixes, seeds, touches, progress: prog });
-    checkTargets();
-    // Guided timed drop: hold the clock on the right beat until the player taps.
-    const g = ctx.guided ? nextGhost() : null;
-    if (g && g.t > 0 && g.t === sim.tick) {
-      phase = 'frozen';
-      audio.beatStop();
-    }
-    if (hintOn && !hintBroken) {
-      const ng = nextGhost();
-      if (ng && ng.t < sim.tick) {
-        hintBroken = true;
-        say(t('play.hintMissed'), 2600);
-      }
-    }
-    evaluate(now);
-    updateGhosts();
-  }
-
-  function checkTargets() {
-    if (!sim || !ctx) return;
-    for (const i of ctx.L.targets) {
-      if (!met.has(i) && sim.ink[i] === ctx.L.goal[i]) {
-        met.add(i);
-        renderer.onTargetMet(i);
-        audio.targetMet(met.size / ctx.L.targets.length);
-      }
-    }
-  }
-
-  function evaluate(now: number) {
-    if (!sim || !ctx || phase === 'won' || phase === 'lost') return;
-    const wrong = sim.wrongCells();
-    if (wrong.length) {
-      if (!pendingFail) pendingFail = { at: now + TEMPO.graceMs, cells: wrong };
-      else pendingFail.cells = wrong;
+    if (!visible || !ctx) return;
+    if (autoplay) core.autoplay(now);
+    const busy = core.frame(now);
+    if (guideSpec && guideSpec.path) placePointer();
+    // While nothing runs only gentle ambient motion remains: draw it at ~30 fps to save battery.
+    if (!busy && !guideSpec?.path && now - lastDraw < 31 && lastDraw > 0) {
+      kick();
       return;
     }
-    if (!decided && sim.allTargetsMet()) {
-      const f = sim.forecast();
-      if (f.result === 'win') {
-        decided = 'win';
-        fastForward = true;
-      }
-    }
-    if (decided === 'win' && sim.settled()) {
-      setTimeout(() => win(), TEMPO.settleDelayMs);
-      phase = 'won';
-      audio.beatStop();
-      return;
-    }
-    if (sim.inksLeft() === 0 && !decided) {
-      if (sim.settled()) {
-        const missing = ctx.L.targets.filter((i) => sim!.ink[i] !== ctx!.L.goal[i]);
-        fail(missing, 'unreached');
-        return;
-      }
-      if (!fastForward && sim.forecast().result === 'lose') fastForward = true;
-    }
-    if (sim.inksLeft() > 0 && phase !== 'idle') {
-      let any = false;
-      for (let i = 0; i < sim.ink.length && !any; i++) if (sim.canDrop(i)) any = true;
-      if (!any && sim.settled()) {
-        const missing = ctx.L.targets.filter((i) => sim!.ink[i] !== ctx!.L.goal[i]);
-        fail(missing, 'unreached');
-      }
-    }
+    lastDraw = now;
+    const animating = renderer.render(now);
+    if (animating || busy || guideSpec?.path) kick();
+    else lastDraw = 0;
   }
 
   // ---------- Fail ----------
-  function classify(cells: number[]): FailKind {
-    if (!sim || !ctx) return 'unreached';
-    for (const i of cells) {
-      const goal = ctx.L.goal[i], got = sim.ink[i];
-      if (goal === WHITE) return 'white';
-      if (got === 7) return 'mud';
-      if (!got) continue;
-      if (!isPrimary(goal) && isPrimary(got)) return 'needMix';
-      if (isPrimary(goal) && !isPrimary(got)) return 'noMix';
-      if (isPrimary(goal) && isPrimary(got)) return 'otherFirst';
-      return 'otherMix';
-    }
-    return 'unreached';
-  }
-
-  function fail(cells: number[], forced?: FailKind) {
-    if (!sim || !ctx || phase === 'won' || phase === 'lost') return;
-    phase = 'lost';
-    audio.beatStop();
+  function fail(cells: number[], main: string, tip: string) {
+    if (!ctx || shellPhase !== 'play') return;
+    shellPhase = 'lost';
     clean = false;
     if (ctx.mode === 'campaign') recordFail(ctx.def.id);
-    const kind = forced || classify(cells);
     renderer.showWrong(cells);
     audio.wrong();
     buzz('error');
-    pointer.classList.add('hidden');
-    bubble.classList.add('hidden');
+    guideSpec = null;
+    placePointer();
     kick();
     setTimeout(() => {
-      if (phase === 'lost' && visible) openFailSheet(kind);
+      if (shellPhase === 'lost' && visible) openFailSheet(main, tip);
     }, 650);
   }
 
-  function openFailSheet(kind: FailKind) {
-    const main = kind === 'white' ? t('fail.white') : kind === 'unreached' ? t('fail.unfinished') : t('fail.wrong');
-    const tipKey = { needMix: 'fail.tip.needMix', noMix: 'fail.tip.noMix', otherFirst: 'fail.tip.otherFirst', otherMix: 'fail.tip.otherMix', white: 'fail.tip.white', mud: 'fail.tip.mud', unreached: 'fail.tip.unreached' }[kind];
+  function openFailSheet(main: string, tip: string) {
     sheet.innerHTML = '';
-    const retry = button(t('play.retry'), () => restart(), { size: 'lg', icon: icon('restart') });
-    const rw = sideButton('rewind', t('play.rewind'), () => onRewind(), store.data.rewinds);
-    const hb = sideButton('hint', t('play.hint'), () => onHint(), ctx && store.data.hinted[ctx.def.id] ? -1 : store.data.hints);
-    sheet.append(
-      h('h2', { text: t('fail.title') }),
-      h('p', { text: main }),
-      h('div.tip', { html: icon('hint') }, h('span', { text: t(tipKey) })),
-      h('div.sheet-actions', null, rw, retry, hb),
-    );
-    if (!sim || sim.drops.length === 0) rw.classList.add('off');
+    const retry = button(t('play.retry'), () => restartAttempt(true), { size: 'lg', icon: icon('restart') });
+    const actions = h('div.sheet-actions');
+    if (undoKind) {
+      const rw = sideButton(undoKind === 'undo' ? 'undo' : 'rewind', undoLabel(), () => onUndo(), undoKind === 'rewind' ? store.data.rewinds : -1);
+      if (!core.canUndo()) rw.classList.add('off');
+      actions.appendChild(rw);
+    }
+    actions.appendChild(retry);
+    if (core.boosters.hint && ctx && !ctx.guided) actions.appendChild(sideButton('hint', t('play.hint'), () => onHint(), store.data.hinted[ctx.def.id] ? -1 : store.data.hints));
+    sheet.append(h('h2', { text: t('fail.title') }), h('p', { text: main }));
+    if (tip) sheet.appendChild(h('div.tip', { html: icon('hint') }, h('span', { text: tip })));
+    sheet.appendChild(actions);
     openSheet();
     shrinkBoard();
   }
 
-  function sideButton(ic: 'rewind' | 'hint', label: string, fn: () => void, count: number): HTMLElement {
+  function sideButton(ic: 'rewind' | 'hint' | 'undo', label: string, fn: () => void, count: number): HTMLElement {
     const b = iconButton(icon(ic), fn, { label });
     if (count >= 0) b.appendChild(h('i.count' + (count > 0 ? '' : '.plus'), { text: count > 0 ? fmt(count) : '+', dataset: { live: ic === 'hint' ? 'hints' : 'rewinds' } }));
     const wrap = h('div.side', null, b, h('span', { text: label }));
@@ -726,16 +463,14 @@ export function createPlayScreen(): Screen {
     sheet.classList.remove('open');
   }
 
-  // ---------- Boosters ----------
+  // ---------- Hint / undo ----------
   async function onHint() {
-    if (!ctx || !sim) return;
-    if (ctx.guided) return;
-    if (hintOn && !hintBroken) {
+    if (!ctx || !core.boosters.hint || ctx.guided) return;
+    if (core.hintShowing() && shellPhase === 'play') {
       say(t('play.hintShown'));
       return;
     }
-    const owned = ctx.mode === 'campaign' ? !!store.data.hinted[ctx.def.id] : !!store.data.hinted[ctx.def.id];
-    if (!owned) {
+    if (!store.data.hinted[ctx.def.id]) {
       if (store.data.hints <= 0) {
         const got = await outOfItem('hints');
         if (!got) return;
@@ -745,63 +480,40 @@ export function createPlayScreen(): Screen {
       store.commit('progress');
     }
     store.data.seen['hint.' + ctx.def.id] = 1;
-    hintOn = true;
     clean = false;
-    audio.hint();
-    // Follow the hint from a clean board unless the player is already on the solution path.
-    if (phase === 'lost' || phase === 'won' || !solutionMatchesSoFar() || hintBroken) {
-      resetAttempt();
-      say(t('play.hintRestart'), 2200);
-    } else say(t('play.hintShown'), 2200);
-    hintBroken = false;
-    updateGhosts();
+    if (shellPhase !== 'play') {
+      // From the fail sheet: start over with the hint.
+      shellPhase = 'play';
+      closeSheet();
+      boardWrap.style.transform = '';
+    }
+    core.showHint();
     updateBoosters();
     kick();
   }
 
-  async function onRewind() {
-    if (!ctx || !sim) return;
-    if (!rewindStack.length || phase === 'won') {
-      say(t('play.rewindNone'));
+  async function onUndo() {
+    if (!ctx || !undoKind) return;
+    if (!core.canUndo()) {
+      say(undoKind === 'undo' ? t('play.undoNone') : t('play.rewindNone'));
       return;
     }
-    if (store.data.rewinds <= 0) {
-      const got = await outOfItem('rewinds');
-      if (!got) return;
+    if (undoKind === 'rewind') {
+      if (store.data.rewinds <= 0) {
+        const got = await outOfItem('rewinds');
+        if (!got) return;
+      }
+      if (!useItem('rewinds')) return;
     }
-    if (!useItem('rewinds')) return;
     clean = false;
-    const snap = rewindStack.pop()!;
-    sim = snap;
-    preStep = null;
-    lastEvents = [];
-    pendingFail = null;
-    decided = null;
-    fastForward = false;
-    resultShown = false;
-    met = new Set(ctx.L.targets.filter((i) => sim!.ink[i] === ctx!.L.goal[i]));
-    renderer.setSim(sim);
-    audio.beatStop();
-    audio.rewind();
-    closeSheet();
-    boardWrap.style.transform = '';
-    phase = sim.drops.length === 0 ? 'idle' : 'rewound';
-    if (phase === 'rewound') resumeBar.classList.add('open');
-    say(t('play.rewindDone'), 2200);
-    if (hintOn) hintBroken = !solutionMatchesSoFar();
-    updateQueue();
-    updateBeat(0, false);
-    updateGhosts();
+    if (shellPhase === 'lost') {
+      shellPhase = 'play';
+      resultShown = false;
+      closeSheet();
+      boardWrap.style.transform = '';
+    }
+    core.undo();
     updateBoosters();
-    kick();
-  }
-
-  function resumeFromRewind() {
-    if (phase !== 'rewound') return;
-    resumeBar.classList.remove('open');
-    phase = 'running';
-    nextBeatAt = performance.now() + beatMs;
-    audio.beatStart(beatMs, nextBeatAt);
     kick();
   }
 
@@ -885,11 +597,7 @@ export function createPlayScreen(): Screen {
 
   // ---------- Pause ----------
   function pauseSilently() {
-    if (phase === 'running' || phase === 'prestart' || phase === 'frozen') {
-      pausedFrom = phase;
-      phase = 'paused';
-      audio.beatStop();
-    }
+    core.pause();
   }
 
   function pause(showMenu: boolean) {
@@ -898,7 +606,7 @@ export function createPlayScreen(): Screen {
     if (!showMenu || pausePopup?.isOpen()) return;
     const body = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
       button(t('play.resume'), () => pausePopup?.close(), { variant: 'jade', size: 'lg', icon: icon('play'), block: true }),
-      button(t('play.restart'), () => { pausePopup?.close(); restart(); }, { variant: 'ghost', icon: icon('restart'), block: true }),
+      button(t('play.restart'), () => { pausePopup?.close(); restartAttempt(true); }, { variant: 'ghost', icon: icon('restart'), block: true }),
       h('div.row', { style: { gap: '12px' } },
         button(t('common.settings'), () => openSettingsPopup(), { variant: 'ghost', icon: icon('gear'), cls: 'grow' }),
         button(t('play.toMap'), () => { pausePopup?.close(); leave(); }, { variant: 'ghost', icon: icon('journey'), cls: 'grow' }),
@@ -909,12 +617,8 @@ export function createPlayScreen(): Screen {
   }
 
   function resume() {
-    if (phase !== 'paused') return;
-    phase = pausedFrom;
-    if (phase === 'running' || phase === 'prestart') {
-      nextBeatAt = performance.now() + beatMs;
-      audio.beatStart(beatMs, nextBeatAt);
-    }
+    core.resume(performance.now());
+    placePointer();
     kick();
   }
 
@@ -926,17 +630,20 @@ export function createPlayScreen(): Screen {
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden' && visible && (phase === 'running' || phase === 'prestart' || phase === 'frozen')) pause(true);
+    if (document.visibilityState === 'hidden' && visible && shellPhase === 'play' && ctx) {
+      const st = core.state().phase;
+      if (st === 'running' || st === 'prestart' || st === 'frozen') pause(true);
+    }
   });
 
   // ---------- Win ----------
   function win() {
-    if (!sim || !ctx || resultShown) return;
+    if (!ctx || resultShown) return;
     resultShown = true;
-    phase = 'won';
+    shellPhase = 'won';
     audio.beatStop();
-    pointer.classList.add('hidden');
-    bubble.classList.add('hidden');
+    guideSpec = null;
+    placePointer();
     renderer.setGhosts(null);
     const sealed = clean && ctx.mode === 'campaign';
     audio.win(sealed);
@@ -1020,7 +727,7 @@ export function createPlayScreen(): Screen {
     const nextIdx = c.index + 1;
     const hasNext = nextIdx < ALL_LEVELS.length;
     const nextBtn = button(hasNext ? t('result.next') : t('result.map'), () => goNext(r), { size: 'lg', icon: icon(hasNext ? 'next' : 'journey') });
-    const replay = h('div.side', null, iconButton(icon('restart'), () => { clean = true; resetAttempt(); }, { label: t('result.replay'), cls: 'mono' }), h('span', { text: t('result.replay') }));
+    const replay = h('div.side', null, iconButton(icon('restart'), () => { clean = true; restartAttempt(false); }, { label: t('result.replay'), cls: 'mono' }), h('span', { text: t('result.replay') }));
     const mapBtn = h('div.side', null, iconButton(icon('journey'), () => leave(), { label: t('result.map') }), h('span', { text: t('result.map') }));
     const actions = h('div.sheet-actions', null, replay, nextBtn, mapBtn);
 
@@ -1114,7 +821,7 @@ export function createPlayScreen(): Screen {
       if (r.milestone) await showReward(r.milestone.reward, { title: t('daily.milestoneTitle'), subtitle: t('daily.streakDays', { n: r.milestone.days }) });
       go('daily', undefined, { resetHistory: true });
     }, { size: 'lg', variant: 'jade', icon: icon('daily') });
-    const replay = h('div.side', null, iconButton(icon('restart'), () => resetAttempt(), { label: t('result.replay'), cls: 'mono' }), h('span', { text: t('result.replay') }));
+    const replay = h('div.side', null, iconButton(icon('restart'), () => restartAttempt(false), { label: t('result.replay'), cls: 'mono' }), h('span', { text: t('result.replay') }));
     sheet.append(head, chips);
     if (coinBox) sheet.appendChild(coinBox);
     sheet.append(h('div.sheet-actions', null, replay, backBtn));
@@ -1123,21 +830,10 @@ export function createPlayScreen(): Screen {
     if (r.streakUp) setTimeout(() => audio.streak(), 500);
   }
 
-  // ---------- Debug autoplay (dev builds, E2E tests) ----------
-  let autoplay = false;
-  function autoplayTick(now: number) {
-    if (!sim || !ctx || anyPopupOpen()) return;
-    if (phase === 'won' || phase === 'lost' || phase === 'paused') return;
-    const s = ctx.def.solution[sim.drops.length];
-    if (!s) return;
-    const idx = sim.idx(s.x, s.y);
-    if (phase === 'idle' || phase === 'prestart') {
-      if (s.t === 0) tryDrop(idx, now, true);
-    } else if (s.t === sim.tick) tryDrop(idx, now, true);
-  }
+  // ---------- Debug / automated tests ----------
   debugHooks.autoplay = (on: boolean) => {
     autoplay = on;
-    if (on && sim && sim.drops.length) resetAttempt();
+    if (on && ctx && attemptDirty) restartAttempt(false);
     kick();
   };
   debugHooks.cellCenter = (idx: number) => {
@@ -1145,39 +841,18 @@ export function createPlayScreen(): Screen {
     const b = canvas.getBoundingClientRect();
     return { x: b.left + r.x + r.size / 2, y: b.top + r.y + r.size / 2 };
   };
-  debugHooks.info = () => (ctx && sim ? { w: sim.w, h: sim.h, solution: ctx.def.solution, droppable: Array.from(sim.ink.keys()).filter((i) => sim!.canDrop(i)) } : null);
+  debugHooks.info = () => (ctx ? { w: ctx.L.w, h: ctx.L.h, solution: ctx.def.solution, strokes: ctx.def.strokes, wells: ctx.def.wells, regions: ctx.def.regions, inks: ctx.def.inks, ...core.state() } : null);
   debugHooks.setTimeScale = (k: number) => {
     timeScale = Math.max(0.25, k);
-    if (ctx) beatMs = computeBeatMs(ctx);
+    if (ctx) core.relayout();
   };
-  debugHooks.state = () => ({ phase, tick: sim?.tick ?? 0, drops: sim?.drops.length ?? 0, level: ctx?.def.id ?? null, mode: ctx?.mode ?? null, sealedEligible: clean });
+  debugHooks.state = () => {
+    const st = ctx ? core.state() : { phase: 'none' };
+    return { ...st, phase: shellPhase === 'won' ? 'won' : shellPhase === 'lost' ? 'lost' : st.phase, level: ctx?.def.id ?? null, mode: ctx?.mode ?? null, sealedEligible: clean };
+  };
   debugHooks.solveNow = () => {
-    if (!sim || !ctx) return;
-    const r = runSolutionNow();
-    if (r) {
-      sim = r;
-      renderer.setSim(sim);
-      decided = 'win';
-      phase = 'running';
-      evaluate(performance.now());
-      kick();
-    }
+    if (ctx && shellPhase === 'play') core.solveNow();
   };
-  function runSolutionNow(): Sim | null {
-    if (!ctx) return null;
-    const s = new Sim(ctx.L);
-    const pending = ctx.def.solution.slice();
-    let guard = 0;
-    while (guard++ < 400) {
-      while (pending.length && pending[0].t <= s.tick) {
-        const d = pending.shift()!;
-        s.drop(s.idx(d.x, d.y));
-      }
-      if (!pending.length && s.settled()) break;
-      s.step();
-    }
-    return s;
-  }
 
   // ---------- Entry points ----------
   function startCampaign(index: number) {
@@ -1205,7 +880,8 @@ export function createPlayScreen(): Screen {
         audio.setMusic('play', ctx.chapter);
         layout();
         updateBoosters();
-        if (phase === 'paused') pause(true);
+        const st = core.state().phase;
+        if (st === 'paused') pause(true);
         kick();
         return;
       }
@@ -1226,7 +902,7 @@ export function createPlayScreen(): Screen {
       audio.setMusic('menu');
     },
     back() {
-      if (phase === 'won' || phase === 'lost') {
+      if (shellPhase !== 'play') {
         leave();
         return true;
       }

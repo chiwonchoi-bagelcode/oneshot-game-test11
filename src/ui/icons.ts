@@ -41,6 +41,8 @@ export const ICONS = {
   next: S(`<path d="M9 4.5l7.5 7.5L9 19.5" ${stroke} stroke-width="2.8"/>`),
   pause: S(`<rect x="6" y="4.5" width="4.2" height="15" rx="1.6" fill="currentColor"/><rect x="13.8" y="4.5" width="4.2" height="15" rx="1.6" fill="currentColor"/>`),
   play: S(`<path d="M7.5 4.8v14.4a1 1 0 0 0 1.5.86l11.6-7.2a1 1 0 0 0 0-1.72L9 3.94a1 1 0 0 0-1.5.86z" fill="currentColor"/>`),
+  undo: S(`<path d="M9 7.2H14.6a5.4 5.4 0 0 1 0 10.8H8.4" ${stroke} stroke-width="2.6"/><path d="M11.8 3.6L8 7.2l3.8 3.6" ${stroke} stroke-width="2.6"/>`),
+  eraser: S(`<path d="M13.6 4.4l6 6-8.4 8.4H6.8l-2.6-2.6a1.6 1.6 0 0 1 0-2.3z" fill="currentColor" opacity=".2"/><path d="M13.6 4.4l6 6-8.4 8.4H6.8l-2.6-2.6a1.6 1.6 0 0 1 0-2.3z" ${stroke}/><path d="M8.4 9.6l6 6M11.2 18.8H20" ${stroke}/>`),
   restart: S(`<path d="M19.4 12.6a7.5 7.5 0 1 1-2.2-6" ${stroke} stroke-width="2.6"/><path d="M18.6 3.2v4.4h-4.4" ${stroke} stroke-width="2.6"/>`),
   journey: S(`<path d="M3 6.2l5.6-2.2 6.8 2.4L21 4.2v13.6l-5.6 2.2-6.8-2.4L3 19.8z" fill="currentColor" opacity=".18"/><path d="M3 6.2l5.6-2.2 6.8 2.4L21 4.2v13.6l-5.6 2.2-6.8-2.4L3 19.8z" ${stroke}/><path d="M8.6 4v13.6M15.4 6.4V20" ${stroke} stroke-width="1.8"/><circle cx="12" cy="11" r="1.6" fill="currentColor"/>`),
   daily: S(`<rect x="3.2" y="4.6" width="17.6" height="16" rx="3" fill="currentColor" opacity=".18"/><rect x="3.2" y="4.6" width="17.6" height="16" rx="3" ${stroke}/><path d="M3.2 9.4h17.6M8 2.8v3.6M16 2.8v3.6" ${stroke}/><path d="M12 11.6s-2.6 2.9-2.6 4.6a2.6 2.6 0 0 0 5.2 0c0-1.7-2.6-4.6-2.6-4.6z" fill="currentColor"/>`),

@@ -31,12 +31,21 @@ export function transformLevel(def: LevelDef, opts: { flipX?: boolean; flipY?: b
     }
     return out;
   };
-  return {
+  const fp = (p: { x: number; y: number }) => ({ x: fx(p.x), y: fy(p.y) });
+  const out: LevelDef = {
     ...def,
     id: id || def.id,
     map: remap(def.map, terrain),
     goal: remap(def.goal, goalCh),
     inks: def.inks.map((s) => mapUpper(s[0]) + s.slice(1)),
-    solution: def.solution.map((d) => ({ x: fx(d.x), y: fy(d.y), t: d.t })),
+    solution: def.solution.map((d) => {
+      const o: typeof d = { ...d, x: fx(d.x), y: fy(d.y) };
+      if (d.c) o.c = mapCode(d.c);
+      return o;
+    }),
   };
+  if (def.wells) out.wells = def.wells.map((w) => ({ ...fp(w), ink: mapUpper(w.ink[0]) + w.ink.slice(1) }));
+  if (def.regions) out.regions = remap(def.regions, (ch) => ch);
+  if (def.strokes) out.strokes = def.strokes.map((st) => st.map(fp));
+  return out;
 }

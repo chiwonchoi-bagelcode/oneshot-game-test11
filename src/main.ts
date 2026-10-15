@@ -1,3 +1,4 @@
+import './variant-apply.ts';
 import 'pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css';
 import './ui/styles.css';
 import { store } from './state/store.ts';
