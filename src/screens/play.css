@@ -627,3 +627,15 @@
   color: var(--ink-2);
   font-weight: 600;
 }
+
+/* Keep the main result/fail action on one line on 360 px phones. */
+.sheet-actions .btn-lg {
+  padding-left: 14px;
+  padding-right: 14px;
+  white-space: nowrap;
+  gap: 6px;
+}
+
+.sheet-actions .btn-lg .ic {
+  font-size: 24px;
+}

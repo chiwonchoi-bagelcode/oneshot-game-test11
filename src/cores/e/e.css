@@ -1,0 +1,25 @@
+/* Core E (first drop shown): the first ink chip carries a small ring until it has been dropped,
+   matching the ring around the marked spot on the board. */
+.queue.e-await .ink-chip:first-child::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 54%;
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
+  border-radius: 50%;
+  border: 2.5px solid var(--e-first, var(--accent));
+  opacity: 0.85;
+  animation: e-chip-ring 1.3s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes e-chip-ring {
+  0% { transform: scale(0.82); opacity: 0.9; }
+  100% { transform: scale(1.18); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queue.e-await .ink-chip:first-child::before { animation: none; opacity: 0.7; }
+}
