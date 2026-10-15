@@ -1,0 +1,81 @@
+/* Core A tray: ink chips you pick from (any order). */
+.queue.a-tray {
+  height: 78px;
+  gap: 6px;
+}
+
+.a-chip {
+  position: relative;
+  flex: none;
+  width: 56px;
+  height: 64px;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 160ms ease;
+}
+
+.a-chip .ink-chip {
+  transform: scale(1.06);
+  transition: transform 200ms cubic-bezier(0.3, 1.5, 0.5, 1), opacity 200ms ease, filter 200ms ease;
+}
+
+.a-chip.sel {
+  background: var(--card);
+  box-shadow: inset 0 0 0 2.5px var(--ink), 0 4px 10px -6px rgba(60, 30, 10, 0.5);
+}
+
+.a-chip.sel .ink-chip {
+  transform: scale(1.24) translateY(-2px);
+}
+
+.a-chip.used .ink-chip {
+  opacity: 0.28;
+  transform: scale(0.8);
+  filter: grayscale(0.6);
+}
+
+.a-chip.used::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 16px;
+  height: 4px;
+  margin-left: -8px;
+  border-radius: 2px;
+  background: var(--ink-3);
+  opacity: 0.5;
+}
+
+.a-chip.pop .ink-chip {
+  animation: a-chip-pop 260ms ease-out;
+}
+
+@keyframes a-chip-pop {
+  0% {
+    transform: scale(1.24) translateY(-2px);
+  }
+  50% {
+    transform: scale(0.6) translateY(-14px);
+    opacity: 0.4;
+  }
+}
+
+/* Colour-blind glyph above the amount number, not across it. */
+.a-chip .ink-chip.has-rng .gly {
+  top: 30%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+}
+
+.a-chip .ink-chip.has-rng .gly svg {
+  width: 100%;
+  height: 100%;
+}

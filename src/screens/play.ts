@@ -102,6 +102,7 @@ export function createPlayScreen(): Screen {
   let guideSpec: GuideSpec | null = null;
   let guideT0 = 0;
   let pointerId = -1;
+  let skipLayer: HTMLElement | null = null;
 
   const host: CoreHost = {
     renderer,
@@ -211,6 +212,8 @@ export function createPlayScreen(): Screen {
     attemptDirty = false;
     shellPhase = 'play';
     resultShown = false;
+    skipLayer?.remove();
+    skipLayer = null;
     closeSheet();
     boardWrap.style.transform = '';
     guideSpec = null;
@@ -657,16 +660,19 @@ export function createPlayScreen(): Screen {
     const showResult = () => {
       if (shown) return;
       shown = true;
-      skipLayer.remove();
+      skipLayer?.remove();
+      skipLayer = null;
       if (campaign) openResultSheet(campaign, sealed);
       else if (daily) openDailySheet(daily);
     };
     // Tap anywhere to skip the finishing animation.
-    const skipLayer = h('div', { style: { position: 'absolute', inset: '0', zIndex: '20' } });
-    skipLayer.addEventListener('pointerdown', () => {
+    skipLayer?.remove();
+    const layer = h('div', { style: { position: 'absolute', inset: '0', zIndex: '20' } });
+    layer.addEventListener('pointerdown', () => {
       renderer.skipWin();
     });
-    el.appendChild(skipLayer);
+    el.appendChild(layer);
+    skipLayer = layer;
     renderer.playWin(sealed, () => setTimeout(showResult, 120));
     kick();
   }
@@ -842,7 +848,7 @@ export function createPlayScreen(): Screen {
     const b = canvas.getBoundingClientRect();
     return { x: b.left + r.x + r.size / 2, y: b.top + r.y + r.size / 2 };
   };
-  debugHooks.info = () => (ctx ? { w: ctx.L.w, h: ctx.L.h, solution: ctx.def.solution, strokes: ctx.def.strokes, wells: ctx.def.wells, regions: ctx.def.regions, inks: ctx.def.inks, ...core.state() } : null);
+  debugHooks.info = () => (ctx ? { ...core.state(), w: ctx.L.w, h: ctx.L.h, solution: ctx.def.solution, strokes: ctx.def.strokes, wells: ctx.def.wells, regions: ctx.def.regions, inks: ctx.def.inks } : null);
   debugHooks.setTimeScale = (k: number) => {
     timeScale = Math.max(0.25, k);
     if (ctx) core.relayout();
