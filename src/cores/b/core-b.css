@@ -1,0 +1,59 @@
+/* Core B tray: one chip per colour with the number of cells that still need it. */
+.queue.b-tray {
+  gap: 12px;
+}
+
+.b-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 56px;
+  min-width: 84px;
+  padding: 0 14px 0 8px;
+  border-radius: 28px;
+  background: var(--card);
+  box-shadow: 0 1px 0 rgba(120, 90, 50, 0.08), 0 4px 12px -6px rgba(90, 60, 30, 0.35);
+  transition: background 220ms ease, transform 220ms ease;
+}
+
+.b-chip .ink-chip {
+  width: 36px;
+  height: 42px;
+}
+
+.b-chip .b-left {
+  min-width: 30px;
+  text-align: center;
+  font-size: 21px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.b-chip .b-left svg {
+  width: 26px;
+  height: 26px;
+  color: var(--ok);
+}
+
+.b-chip.done {
+  background: var(--jade-soft);
+}
+
+.b-chip.bad .b-left {
+  color: var(--danger);
+}
+
+.b-chip.pop {
+  animation: b-chip-pop 420ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+@keyframes b-chip-pop {
+  40% {
+    transform: scale(1.12);
+  }
+}

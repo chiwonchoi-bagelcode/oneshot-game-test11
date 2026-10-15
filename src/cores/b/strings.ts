@@ -1,2 +1,101 @@
-// Core b strings (KO/EN): rule cards (mech.<key>.title/body), coach lines, tray labels.
-export default { ko: {} as Record<string, string>, en: {} as Record<string, string> };
+// Core B strings (KO/EN): rule cards (mech.<key>.title/body), coach lines, tray labels.
+// Also re-words a few shared lines that describe the original drop-and-beat rules.
+export default {
+  ko: {
+    'mech.b_draw.title': '한붓 칠하기',
+    'mech.b_draw.body': '물감 방울에서 손가락을 떼지 말고 끌어요. 지나간 칸이 그 색으로 물들어요.',
+    'mech.b_fill.title': '모든 칸 칠하기',
+    'mech.b_fill.body': '그림의 모든 칸을 칠하면 완성이에요. 지나온 길은 다시 지날 수 없으니, 막히면 왔던 길로 되돌아가 지워요.',
+    'mech.b_mix.title': '겹치면 섞여요',
+    'mech.b_mix.body': '노랑과 파랑이 같은 칸을 지나가면 초록이 돼요. 초록 칸은 두 색 모두, 노랑 칸은 노랑만 지나가야 해요.',
+    'mech.b_three.title': '빨강도 섞여요',
+    'mech.b_three.body': '빨강과 노랑이 겹치면 주황, 빨강과 파랑이 겹치면 보라가 돼요.',
+    'mech.b_twin.title': '같은 색 방울 두 개',
+    'mech.b_twin.body': '같은 색 방울이 둘이면 칠할 칸을 나눠 맡아요. 같은 색끼리는 겹칠 수 없어요.',
+    'mech.b_stone.title': '돌',
+    'mech.b_stone.body': '돌은 칠할 수 없어요. 돌을 피해 돌아가는 길을 찾아요.',
+
+    'b.c.turn': '모퉁이에서 손가락을 꺾어요',
+    'b.c.back': '막히면 왔던 길로 되돌아가요. 지나온 칸이 지워져요',
+    'b.c.two': '색마다 제 방울에서 그려요',
+    'b.c.share': '초록 줄은 노랑과 파랑이 둘 다 지나가야 해요',
+    'b.c.twin': '두 방울이 칸을 나눠 칠해요',
+    'b.c.stone': '돌을 피해서 모든 칸을 칠해요',
+    'b.c.grab': '그린 길의 끝을 잡고 이어서 그릴 수 있어요',
+
+    'b.guide.drag': '방울에서 끌어요',
+    'b.guide.keep': '이어서 끌어요',
+    'b.guide.back': '되돌아가요',
+
+    'b.say.start': '물감 방울이나 그린 길에서 시작해요',
+    'b.say.self': '지나온 길은 다시 지날 수 없어요',
+    'b.say.same': '같은 색끼리는 겹칠 수 없어요',
+    'b.say.source': '다른 방울 위로는 지나갈 수 없어요',
+    'b.say.wall': '돌은 칠할 수 없어요',
+    'b.say.extra': '표시된 칸에는 그 색이 들어가면 안 돼요',
+    'b.say.wrong': '색이 맞지 않는 칸이 있어요. 표시된 칸을 고쳐 봐요',
+    'b.say.cleared': '이 색의 길을 지웠어요. 되돌리기로 살릴 수 있어요',
+    'b.say.tapDrag': '손가락을 떼지 말고 끌어서 칠해요',
+    'b.say.undo': '한 번 되돌렸어요',
+    'b.say.stuck': '이 길은 막혔어요. 되돌아가서 다른 길로 가 봐요',
+    'b.say.hint': '점선을 따라 그려 보세요',
+
+    'b.tray.left': '{color} {n}칸 남음',
+    'b.tray.done': '{color} 완성',
+
+    // Shared lines that describe the original rules.
+    'play.hintShown': '점선을 따라 그려 보세요',
+    'play.noHints.body': '힌트를 쓰면 이 그림을 그리는 길을 점선으로 보여 줘요.',
+    'shop.desc.hints': '그림을 그리는 길을 점선으로 보여 줘요',
+    'result.sealHelp': '그린 길을 지우지 않고, 힌트와 되돌리기 없이 완성하면 낙관을 받아요',
+    'chapter.sealRewardsBody': '그린 길을 지우지 않고, 힌트와 되돌리기 없이 한 번에 완성하면 낙관이 찍혀요. 이 장에서 낙관을 모으면 보상을 받아요.',
+  } as Record<string, string>,
+  en: {
+    'mech.b_draw.title': 'One stroke',
+    'mech.b_draw.body': 'Keep your finger down and drag from a paint drop. Every cell you pass takes its color.',
+    'mech.b_fill.title': 'Paint every cell',
+    'mech.b_fill.body': 'The picture is done when every cell is painted. A stroke can’t cross itself, so if you get stuck, slide back to erase.',
+    'mech.b_mix.title': 'Overlaps mix',
+    'mech.b_mix.body': 'Where yellow and blue pass the same cell, it turns green. Green cells need both colors, yellow cells only yellow.',
+    'mech.b_three.title': 'Red mixes too',
+    'mech.b_three.body': 'Red over yellow makes orange. Red over blue makes purple.',
+    'mech.b_twin.title': 'Twin drops',
+    'mech.b_twin.body': 'Two drops of the same color share the cells. Strokes of the same color can’t overlap.',
+    'mech.b_stone.title': 'Stones',
+    'mech.b_stone.body': 'Stones can’t be painted. Find a way around them.',
+
+    'b.c.turn': 'Turn your finger at the corners',
+    'b.c.back': 'Stuck? Slide back the way you came to erase',
+    'b.c.two': 'Each color starts from its own drop',
+    'b.c.share': 'The green row needs both yellow and blue',
+    'b.c.twin': 'The two drops share the cells',
+    'b.c.stone': 'Paint every cell around the stones',
+    'b.c.grab': 'Grab the end of a stroke to keep drawing',
+
+    'b.guide.drag': 'Drag from the drop',
+    'b.guide.keep': 'Keep dragging',
+    'b.guide.back': 'Slide back',
+
+    'b.say.start': 'Start from a paint drop or a stroke you drew',
+    'b.say.self': 'A stroke can’t cross itself',
+    'b.say.same': 'Strokes of the same color can’t overlap',
+    'b.say.source': 'You can’t paint over another drop',
+    'b.say.wall': 'Stones can’t be painted',
+    'b.say.extra': 'Marked cells don’t want that color',
+    'b.say.wrong': 'Some cells have the wrong color. Fix the marked ones',
+    'b.say.cleared': 'Stroke cleared. Undo brings it back',
+    'b.say.tapDrag': 'Keep your finger down and drag to paint',
+    'b.say.undo': 'Undid one move',
+    'b.say.stuck': 'This stroke is stuck. Slide back and try another way',
+    'b.say.hint': 'Follow the dotted lines',
+
+    'b.tray.left': '{color}: {n} cells left',
+    'b.tray.done': '{color} done',
+
+    'play.hintShown': 'Follow the dotted lines',
+    'play.noHints.body': 'A hint shows the strokes for this picture as dotted lines.',
+    'shop.desc.hints': 'Shows the strokes for a picture as dotted lines',
+    'result.sealHelp': 'Finish without erasing earlier strokes, hints or undo to earn a seal',
+    'chapter.sealRewardsBody': 'Finish a picture in one go, without erasing earlier strokes, hints or undo, to earn a seal. Collect seals in this chapter for rewards.',
+  } as Record<string, string>,
+};
