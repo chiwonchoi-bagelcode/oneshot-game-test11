@@ -5,3 +5,4 @@ dist
 tools/e2e/out
 dist-test
 dist-test-*
+site-cores

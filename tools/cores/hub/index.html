@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex" />
+<title>물들임 · 코어 비교</title>
+<style>
+  :root { --paper:#f4ecdf; --card:#fffaf2; --line:#e4d6bf; --ink:#2b2733; --ink2:#5f5768; --ink3:#8f8696; --accent:#e0563b; --accentD:#b4402a; --jade:#2f8a74; --jadeD:#1f6453; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--paper); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Pretendard', 'Noto Sans KR', system-ui, sans-serif; word-break: keep-all; }
+  main { max-width: 560px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 20px) 16px calc(env(safe-area-inset-bottom) + 32px); }
+  h1 { font-size: 26px; margin: 6px 2px 4px; letter-spacing: -0.02em; }
+  .lead { margin: 0 2px 18px; color: var(--ink2); font-size: 14.5px; line-height: 1.55; }
+  .card { background: var(--card); border-radius: 22px; box-shadow: 0 1px 0 rgba(120,90,50,.06), 0 8px 22px -10px rgba(90,60,30,.35); padding: 16px; margin-bottom: 12px; }
+  .head { display: flex; align-items: center; gap: 12px; }
+  .badge { flex: none; width: 46px; height: 46px; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 900; color: #fff; }
+  .name { font-size: 18px; font-weight: 850; }
+  .sub { font-size: 13px; color: var(--ink3); font-weight: 700; margin-top: 2px; }
+  .rule { margin: 12px 0 0; font-size: 14.5px; line-height: 1.55; color: var(--ink2); }
+  .status { margin-top: 10px; font-size: 13px; font-weight: 700; color: var(--ink2); display: flex; align-items: center; gap: 8px; }
+  .bar { flex: 1; height: 8px; border-radius: 4px; background: #e1d3bb; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--jade), #49b394); }
+  .row { display: flex; gap: 10px; margin-top: 14px; }
+  a.btn, button.btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; min-height: 52px; border-radius: 16px; font-size: 17px; font-weight: 800; text-decoration: none; border: 0; cursor: pointer; font-family: inherit; }
+  .play { background: var(--accent); color: #fff; box-shadow: inset 0 -5px 0 var(--accentD); }
+  .reset { flex: 0 0 auto !important; padding: 0 18px; background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 2px var(--line), inset 0 -4px 0 #d6c4a6; }
+  .orig .badge { background: #6f6578; }
+  .note { font-size: 13px; color: var(--ink3); line-height: 1.55; margin: 18px 4px 0; }
+  .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); transform: translateX(-50%); background: rgba(43,39,51,.92); color: #fff; padding: 11px 18px; border-radius: 14px; font-weight: 700; font-size: 14.5px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+<main>
+  <h1>물들임 · 코어 비교</h1>
+  <p class="lead">다섯 버전은 같은 그림과 화면에 서로 다른 규칙을 넣었어요. 버전마다 진행, 튜토리얼, 코인이 따로 저장되니 처음 설치한 게임처럼 하나씩 플레이해 보세요.</p>
+  <div id="list"></div>
+  <p class="note">"처음부터"는 그 버전의 저장만 지워 처음 설치한 상태로 돌려요. 다른 버전과 원작의 저장은 그대로예요. 지우지 않으면 다음 날 이어서 플레이할 수 있어요.</p>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+  const VERSIONS = [
+    { id: 'a', color: '#e0563b', name: '번짐 겹치기', sub: 'A · 시간과 무관한 확산·혼색', rule: '방울을 놓으면 정해진 범위까지 번지고, 다른 색과 겹친 곳은 언제 닿았든 섞여요. 어디에 놓아야 겹치는 모양이 그림과 맞을지 생각해요.' },
+    { id: 'b', color: '#2f8a74', name: '한붓그리기', sub: 'B · 경로를 그려 칠하기', rule: '색마다 시작점에서 손가락으로 길을 그어 칠해요. 다른 색 길이 겹친 칸은 섞이니, 필요한 곳에서만 겹치도록 길을 골라요.' },
+    { id: 'c', color: '#f4b532', name: '색칠놀이', sub: 'C · 구획을 골라 채우기', rule: '그림의 칸을 골라 색을 부으면 그 안에서 잉크가 번져요. 두 색을 섞어 새 색을 만들며 그림을 완성해요.' },
+    { id: 'd', color: '#4b7fe0', name: '샘 열기', sub: 'D · 투입 위치가 보이는 타이밍 퍼즐', rule: '잉크를 넣을 수 있는 샘이 처음부터 보여요. 어느 샘을 어떤 순서로, 몇 번째 박자에 열지 골라 색이 만나게 해요.' },
+    { id: 'e', color: '#7b5bd6', name: '첫 방울 추리', sub: 'E · 첫 수를 알려주는 추론 퍼즐', rule: '첫 방울 자리는 알려 줘요. 첫 방울이 번지는 모습을 보고 나머지 방울의 자리와 박자를 알아내요.' },
+  ];
+  const TOTAL = 30;
+  const key = (id) => 'inkbloom.core-' + id + '.save';
+  function read(id) {
+    try { return JSON.parse(localStorage.getItem(key(id)) || 'null'); } catch { return null; }
+  }
+  function status(id) {
+    const s = read(id);
+    if (!s) return { text: '아직 플레이하지 않았어요', n: 0 };
+    const n = Object.values(s.levels || {}).filter((r) => r && r.c).length;
+    const last = s.stats && s.stats.lastSession ? new Date(s.stats.lastSession) : null;
+    const when = last ? (last.getMonth() + 1) + '월 ' + last.getDate() + '일' : '';
+    return { text: '스테이지 ' + n + '/' + TOTAL + ' 완성' + (when ? ' · 마지막 ' + when : ''), n };
+  }
+  function toast(t) {
+    const el = document.getElementById('toast');
+    el.textContent = t; el.classList.add('on');
+    clearTimeout(toast.tm); toast.tm = setTimeout(() => el.classList.remove('on'), 1800);
+  }
+  function render() {
+    const list = document.getElementById('list');
+    list.innerHTML = '';
+    for (const v of VERSIONS) {
+      const st = status(v.id);
+      const card = document.createElement('section');
+      card.className = 'card';
+      card.innerHTML = `
+        <div class="head"><div class="badge" style="background:${v.color}">${v.id.toUpperCase()}</div>
+          <div><div class="name">${v.name}</div><div class="sub">${v.sub}</div></div></div>
+        <p class="rule">${v.rule}</p>
+        <div class="status"><span>${st.text}</span><div class="bar"><i style="width:${(st.n / TOTAL) * 100}%"></i></div></div>
+        <div class="row"><a class="btn play" href="./${v.id}/">플레이</a><button class="btn reset" type="button">처음부터</button></div>`;
+      card.querySelector('.reset').addEventListener('click', () => {
+        if (!read(v.id)) { toast(v.name + '은(는) 이미 처음 상태예요'); return; }
+        if (!confirm(v.id.toUpperCase() + ' · ' + v.name + '의 진행과 튜토리얼, 코인을 모두 지우고 처음 설치한 상태로 돌릴까요?')) return;
+        localStorage.removeItem(key(v.id));
+        localStorage.removeItem(key(v.id) + '.bak');
+        toast(v.id.toUpperCase() + ' 버전을 처음 상태로 돌렸어요');
+        render();
+      });
+      list.appendChild(card);
+    }
+    const orig = document.createElement('section');
+    orig.className = 'card orig';
+    orig.innerHTML = `<div class="head"><div class="badge">원</div><div><div class="name">원작</div><div class="sub">비교 기준 · 기존 배포본 그대로</div></div></div>
+      <p class="rule">위치와 박자를 함께 맞추는 원래 규칙이에요. 기존 저장 데이터를 그대로 써요.</p>
+      <div class="row"><a class="btn play" href="../">플레이</a></div>`;
+    list.appendChild(orig);
+  }
+  render();
+  window.addEventListener('pageshow', render);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+</script>
+</body>
+</html>
