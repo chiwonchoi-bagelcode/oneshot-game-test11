@@ -118,7 +118,8 @@ function reskin(def: LevelDef, day: string, tier: number): LevelDef {
   }
   const flipX = rnd() < 0.5, flipY = rnd() < 0.5;
   // Colouring-book pictures keep their real colours (a blue sun would just look wrong).
-  const out = transformLevel(def, { flipX, flipY, perm: CORE === 'c' ? undefined : perm }, 'daily-' + day + '-' + tier);
+  // Colouring-book pictures stay upright and keep their real colours (a blue sun would look wrong).
+  const out = transformLevel(def, { flipX, flipY: CORE === 'c' ? false : flipY, perm: CORE === 'c' ? undefined : perm }, 'daily-' + day + '-' + tier);
   // A daily is never a lesson: no intro card, no guided steps.
   delete out.intro;
   delete out.guided;
