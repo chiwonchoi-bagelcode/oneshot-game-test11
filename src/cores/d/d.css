@@ -1,0 +1,13 @@
+/* Core D: wells summary under the board. */
+.queue.d-wells {
+  gap: 12px;
+}
+
+.queue.d-wells .ink-chip.covered {
+  opacity: 0.18;
+  filter: grayscale(1);
+}
+
+.queue.d-wells .ink-chip.held {
+  transform: scale(1.22) translateY(-3px);
+}
